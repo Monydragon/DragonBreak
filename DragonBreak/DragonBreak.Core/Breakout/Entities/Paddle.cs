@@ -1,0 +1,28 @@
+using Microsoft.Xna.Framework;
+
+namespace DragonBreak.Core.Breakout.Entities;
+
+public sealed class Paddle
+{
+    public Vector2 Position;
+    public readonly Vector2 Size;
+    public float SpeedPixelsPerSecond;
+
+    public Paddle(Vector2 position, Vector2 size, float speedPixelsPerSecond)
+    {
+        Position = position;
+        Size = size;
+        SpeedPixelsPerSecond = speedPixelsPerSecond;
+    }
+
+    public Rectangle Bounds => new((int)Position.X, (int)Position.Y, (int)Size.X, (int)Size.Y);
+
+    public Vector2 Center => Position + Size * 0.5f;
+
+    public void Update(float dtSeconds, float moveX, int worldWidth)
+    {
+        Position.X += moveX * SpeedPixelsPerSecond * dtSeconds;
+        Position.X = MathHelper.Clamp(Position.X, 0f, worldWidth - Size.X);
+    }
+}
+

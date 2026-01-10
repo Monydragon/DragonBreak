@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+    <PropertyGroup>
+        <OutputType>WinExe</OutputType>
+        <TargetFramework>net9.0</TargetFramework>
+        <PublishReadyToRun>false</PublishReadyToRun>
+        <TieredCompilation>false</TieredCompilation>
+        <ApplicationManifest>app.manifest</ApplicationManifest>
+        <ApplicationIcon>../DragonBreak.Core/Content/Icon.ico</ApplicationIcon>
+        <AssemblyName>DragonBreak</AssemblyName>
+        <RootNamespace>DragonBreak.DesktopGL</RootNamespace>
+    </PropertyGroup>
+    <ItemGroup>
+        <ProjectReference Include="..\DragonBreak.Core\DragonBreak.Core.csproj" />
+    </ItemGroup>
+    <ItemGroup>
+        <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.*"/>
+        <PackageReference Include="MonoGame.Content.Builder.Task" Version="3.8.*"/>
+    </ItemGroup>
+    <ItemGroup>
+      <MonoGameContentReference Include="..\DragonBreak.Core\Content\BoxHero.mgcb">
+        <Link>Content\BoxHero.mgcb</Link>
+      </MonoGameContentReference>
+    </ItemGroup>
+</Project>

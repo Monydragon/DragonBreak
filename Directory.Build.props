@@ -1,0 +1,7 @@
+﻿<Project>
+  <PropertyGroup Condition=" '$(TargetFramework)' != '' and $(TargetFramework.Contains('-android')) ">
+    <!-- Prefer environment variables set by Android Studio / VS; override with -p:AndroidSdkDirectory=... if needed -->
+    <AndroidSdkDirectory Condition=" '$(AndroidSdkDirectory)' == '' and '$(ANDROID_SDK_ROOT)' != '' ">$(ANDROID_SDK_ROOT)</AndroidSdkDirectory>
+    <AndroidSdkDirectory Condition=" '$(AndroidSdkDirectory)' == '' and '$(ANDROID_HOME)' != '' ">$(ANDROID_HOME)</AndroidSdkDirectory>
+  </PropertyGroup>
+</Project>

@@ -1,0 +1,79 @@
+# .NET / MonoGame / JetBrains Rider / Visual Studio
+# ------------------------------------------------------------------------------
+
+# Build outputs
+**/bin/
+**/obj/
+**/artifacts/
+[Bb]uild/
+[Dd]ebug/
+[Rr]elease/
+
+# MonoGame Content Pipeline
+**/Content/bin/
+**/Content/obj/
+
+# NuGet
+**/packages/
+*.nupkg
+*.snupkg
+# We typically keep packages.lock.json if you use it; ignore only user-local files
+**/packages.lock.json
+
+# Logs
+*.log
+
+# OS / tooling noise
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# JetBrains Rider / IntelliJ
+.idea/
+*.sln.iml
+
+# Rider / ReSharper caches
+_ReSharper*/
+*.[Rr]e[Ss]harper
+*.DotSettings.user
+
+# Visual Studio
+.vs/
+
+# MSBuild / Visual Studio user files
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Test results
+TestResults/
+
+# Coverage outputs
+coverage*
+*.coverage
+*.coveragexml
+
+# Android (Xamarin/Mono/MAUI style outputs)
+**/android/bin/
+**/android/obj/
+**/*Android*/bin/
+**/*Android*/obj/
+
+# iOS (Xamarin/Mono/MAUI style outputs)
+**/*iOS*/bin/
+**/*iOS*/obj/
+
+# macOS (if you add it later)
+**/*Mac*/bin/
+**/*Mac*/obj/
+
+# Local publish outputs
+**/publish/
+
+# Generated designer files (keep if you want deterministic builds; comment out if you commit them)
+# **/Resources.Designer.cs
+
+# Optional: Keep this ignored so user-local solution settings never get committed
+DragonBreak.sln.DotSettings.user
+

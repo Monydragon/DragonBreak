@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="DragonBreak/DragonBreak.Core/DragonBreak.Core.csproj" />
+  <Project Path="DragonBreak/DragonBreak.DesktopGL/DragonBreak.DesktopGL.csproj" />
+</Solution>

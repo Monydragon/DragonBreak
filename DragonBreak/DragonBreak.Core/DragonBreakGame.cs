@@ -4,10 +4,10 @@ using System.Globalization;
 using DragonBreak.Core.Breakout;
 using DragonBreak.Core.Input;
 using DragonBreak.Core.Localization;
+using DragonBreak.Core.Settings;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
 using Microsoft.Xna.Framework.Input;
-using static System.Net.Mime.MediaTypeNames;
 
 namespace DragonBreak.Core
 {
@@ -23,6 +23,11 @@ namespace DragonBreak.Core
         private SpriteBatch _spriteBatch = null!;
         private readonly InputMapper _input = new();
         private readonly BreakoutWorld _world = new();
+
+        private readonly SettingsStore _settingsStore;
+        private readonly SettingsManager _settings;
+        private readonly DisplayModeService _displayModes;
+        private readonly AudioService _audio;
 
         /// <summary>
         /// Indicates if the game is running on a mobile platform.
@@ -47,6 +52,17 @@ namespace DragonBreak.Core
             // Share GraphicsDeviceManager as a service.
             Services.AddService(typeof(GraphicsDeviceManager), graphicsDeviceManager);
 
+            _settingsStore = new SettingsStore();
+            _settings = new SettingsManager(_settingsStore);
+            _displayModes = new DisplayModeService();
+            _audio = new AudioService();
+
+            Services.AddService(typeof(SettingsManager), _settings);
+            Services.AddService(typeof(DisplayModeService), _displayModes);
+            Services.AddService(typeof(AudioService), _audio);
+
+            _settings.SettingsApplied += ApplySettings;
+
             Content.RootDirectory = "Content";
 
             // Configure screen orientations.
@@ -57,6 +73,10 @@ namespace DragonBreak.Core
             {
                 Window.Title = "DragonBreak";
                 IsMouseVisible = true;
+
+                // We'll toggle this based on window mode when applying settings.
+                Window.AllowUserResizing = true;
+                Window.ClientSizeChanged += (_, _) => OnClientSizeChanged();
             }
         }
 
@@ -66,6 +86,9 @@ namespace DragonBreak.Core
         /// </summary>
         protected override void Initialize()
         {
+            // Apply settings as early as possible.
+            ApplySettings(_settings.Current);
+
             base.Initialize();
 
             // Load supported languages and set the default language.
@@ -82,13 +105,46 @@ namespace DragonBreak.Core
             LocalizationManager.SetCulture(selectedLanguage);
         }
 
+        private void ApplySettings(GameSettings settings)
+        {
+            settings = (settings ?? GameSettings.Default).Validate();
+
+            // Display
+            _displayModes.Apply(settings.Display, graphicsDeviceManager, Window);
+
+            // Audio
+            _audio.Apply(settings.Audio);
+        }
+
+        private void OnClientSizeChanged()
+        {
+            if (!IsDesktop)
+                return;
+
+            // Only persist user resizing when in windowed mode.
+            var current = _settings.Current;
+            if (current.Display.WindowMode != WindowMode.Windowed)
+                return;
+
+            int w = Window.ClientBounds.Width;
+            int h = Window.ClientBounds.Height;
+            if (w <= 0 || h <= 0)
+                return;
+
+            // Avoid churn if the size hasn't actually changed.
+            if (current.Display.Width == w && current.Display.Height == h)
+                return;
+
+            _settings.UpdateCurrent(current with { Display = current.Display with { Width = w, Height = h } }, save: true);
+        }
+
         /// <summary>
         /// Loads game content, such as textures and particle systems.
         /// </summary>
         protected override void LoadContent()
         {
             _spriteBatch = new SpriteBatch(GraphicsDevice);
-            _world.Load(GraphicsDevice, Content);
+            _world.Load(GraphicsDevice, Content, Services);
             base.LoadContent();
         }
 

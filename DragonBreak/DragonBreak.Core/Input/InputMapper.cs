@@ -17,15 +17,20 @@ public sealed class InputMapper
         var pad = GamePad.GetState(playerIndex);
 
         float moveX = 0f;
+        float moveY = 0f;
 
         // Keyboard digital movement
         if (keyboard.IsKeyDown(Keys.Left) || keyboard.IsKeyDown(Keys.A)) moveX -= 1f;
         if (keyboard.IsKeyDown(Keys.Right) || keyboard.IsKeyDown(Keys.D)) moveX += 1f;
+        if (keyboard.IsKeyDown(Keys.Up) || keyboard.IsKeyDown(Keys.W)) moveY += 1f;
+        if (keyboard.IsKeyDown(Keys.Down) || keyboard.IsKeyDown(Keys.S)) moveY -= 1f;
 
         // GamePad analog + dpad movement
         if (pad.IsConnected)
         {
             float stickX = pad.ThumbSticks.Left.X;
+            float stickY = pad.ThumbSticks.Left.Y;
+
             // ThumbSticks are already in [-1..1].
             if (System.Math.Abs(stickX) > 0.2f)
             {
@@ -35,6 +40,16 @@ public sealed class InputMapper
             {
                 if (pad.DPad.Left == ButtonState.Pressed) moveX -= 1f;
                 if (pad.DPad.Right == ButtonState.Pressed) moveX += 1f;
+            }
+
+            if (System.Math.Abs(stickY) > 0.2f)
+            {
+                moveY = stickY;
+            }
+            else
+            {
+                if (pad.DPad.Up == ButtonState.Pressed) moveY += 1f;
+                if (pad.DPad.Down == ButtonState.Pressed) moveY -= 1f;
             }
         }
 
@@ -103,6 +118,7 @@ public sealed class InputMapper
 
         var state = new DragonBreakInput(
             moveX,
+            moveY,
             servePressed: serveDown && !serveWasDown,
             pausePressed: pauseDown && !pauseWasDown,
             exitPressed: exitDown && !exitWasDown,

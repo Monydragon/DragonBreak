@@ -5,6 +5,7 @@ namespace DragonBreak.Core.Input;
 public readonly struct DragonBreakInput
 {
     public float MoveX { get; }
+    public float MoveY { get; }
     public bool ServePressed { get; }
     public bool PausePressed { get; }
     public bool ExitPressed { get; }
@@ -25,6 +26,7 @@ public readonly struct DragonBreakInput
 
     public DragonBreakInput(
         float moveX,
+        float moveY,
         bool servePressed,
         bool pausePressed,
         bool exitPressed,
@@ -40,6 +42,7 @@ public readonly struct DragonBreakInput
         float menuMoveY = 0f)
     {
         MoveX = MathHelper.Clamp(moveX, -1f, 1f);
+        MoveY = MathHelper.Clamp(moveY, -1f, 1f);
         ServePressed = servePressed;
         PausePressed = pausePressed;
         ExitPressed = exitPressed;

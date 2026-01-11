@@ -11,11 +11,23 @@ public sealed class Ball
     // Which local player owns/controls this ball.
     public int OwnerPlayerIndex;
 
-    public Ball(Vector2 position, float radius, int ownerPlayerIndex = 0)
+    /// <summary>
+    /// True when this ball was spawned by a multiball powerup.
+    /// Extra balls should never cost lives when lost.
+    /// </summary>
+    public bool IsExtraBall;
+
+    /// <summary>
+    /// If set, overrides the default draw color used for this ball.
+    /// </summary>
+    public Color? DrawColor;
+
+    public Ball(Vector2 position, float radius, int ownerPlayerIndex = 0, bool isExtraBall = false)
     {
         Position = position;
         Radius = radius;
         OwnerPlayerIndex = ownerPlayerIndex;
+        IsExtraBall = isExtraBall;
     }
 
     public Rectangle Bounds => new(

@@ -17,8 +17,8 @@
         <PackageReference Include="MonoGame.Content.Builder.Task" Version="3.8.*"/>
     </ItemGroup>
     <ItemGroup>
-      <MonoGameContentReference Include="..\DragonBreak.Core\Content\BoxHero.mgcb">
-        <Link>Content\BoxHero.mgcb</Link>
+      <MonoGameContentReference Include="..\DragonBreak.Core\Content\DragonBreak.mgcb">
+        <Link>Content\DragonBreak.mgcb</Link>
       </MonoGameContentReference>
     </ItemGroup>
 </Project>

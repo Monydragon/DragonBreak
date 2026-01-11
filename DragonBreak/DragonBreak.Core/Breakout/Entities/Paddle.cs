@@ -19,10 +19,12 @@ public sealed class Paddle
 
     public Vector2 Center => Position + Size * 0.5f;
 
-    public void Update(float dtSeconds, float moveX, int worldWidth)
+    public void Update(float dtSeconds, float moveX, float moveY, int worldWidth, float minY, float maxY)
     {
         Position.X += moveX * SpeedPixelsPerSecond * dtSeconds;
+        Position.Y -= moveY * SpeedPixelsPerSecond * dtSeconds;
+
         Position.X = MathHelper.Clamp(Position.X, 0f, worldWidth - Size.X);
+        Position.Y = MathHelper.Clamp(Position.Y, minY, maxY);
     }
 }
-

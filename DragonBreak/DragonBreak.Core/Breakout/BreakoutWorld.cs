@@ -562,34 +562,40 @@ public sealed class BreakoutWorld
                     servePressed = inputs[owner].ServePressed;
                 }
 
-                // Launch rules:
-                // - Space uses press-to-arm + release-to-launch (handled via catchReleased)
-                // - Controller A uses a normal pressed event to launch
-                // - Only primary (colored) balls are launchable/catchable this way
+                bool wasCaught = i < _ballCaught.Count && _ballCaught[i];
                 bool isPrimary = owner < _primaryBallIndexByPlayer.Count && _primaryBallIndexByPlayer[owner] == i;
 
-                if (!_balls[i].IsExtraBall && isPrimary)
+                // Launch handling:
+                // - Primary (non-extra) balls keep the "caught" safety rules.
+                // - Extra balls can also be launched if they ever end up attached to the paddle.
+                bool launchRequested;
+                if (_balls[i].IsExtraBall)
                 {
-                    bool wasCaught = i < _ballCaught.Count && _ballCaught[i];
+                    // Extra balls: allow launch on either serve press or catch release.
+                    launchRequested = servePressed || catchReleased;
+                }
+                else if (isPrimary)
+                {
+                    // Primary ball: release launches when attached (serve OR caught); serve-press launches only for initial serve.
+                    launchRequested = catchReleased || (!wasCaught && servePressed);
+                }
+                else
+                {
+                    // Non-primary, non-extra balls shouldn't normally be in serving state; don't auto-launch.
+                    launchRequested = false;
+                }
 
-                    // Consistent launch gesture:
-                    // - If the ball is attached to the paddle (initial serve OR caught), launch on catch button RELEASE.
-                    //   This works well for controller A (hold to catch, release to fire) and for Space.
-                    // - We still keep ServePressed (Y/Triangle) available as an alternate for initial serves.
-                    bool launchRequested = catchReleased || (!wasCaught && servePressed);
+                if (launchRequested)
+                {
+                    Serve(i);
 
-                    if (launchRequested)
+                    if (i < _ballCaught.Count)
+                        _ballCaught[i] = false;
+
+                    if (owner < _catchArmedByPlayer.Count)
                     {
-                        Serve(i);
-
-                        if (i < _ballCaught.Count)
-                            _ballCaught[i] = false;
-
-                        if (owner < _catchArmedByPlayer.Count)
-                        {
-                            _catchArmedByPlayer[owner] = false;
-                            _catchArmedConsumedByPlayer[owner] = false;
-                        }
+                        _catchArmedByPlayer[owner] = false;
+                        _catchArmedConsumedByPlayer[owner] = false;
                     }
                 }
 
@@ -1451,7 +1457,7 @@ public sealed class BreakoutWorld
         }
     }
 
-    private void HandlePaddleCollision(int ballIndex, DragonBreakInput[] inputs, Viewport playfield)
+    private void HandlePaddleCollision(int ballIndex, DragonBreakInput[]? inputs, Viewport playfield)
     {
         if ((uint)ballIndex >= (uint)_balls.Count) return;
 

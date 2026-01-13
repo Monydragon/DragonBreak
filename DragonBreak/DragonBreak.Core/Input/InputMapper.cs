@@ -9,12 +9,21 @@ namespace DragonBreak.Core.Input;
 public sealed class InputMapper
 {
     private KeyboardState _prevKeyboard;
-    private GamePadState _prevGamePad;
+
+    // Track previous pad state PER player; using one shared GamePadState breaks pressed/released detection
+    // when UpdateForPlayer is called for multiple PlayerIndex values in the same frame.
+    private readonly GamePadState[] _prevGamePadByPlayer = new GamePadState[4];
 
     public DragonBreakInput Update(PlayerIndex playerIndex)
     {
         var keyboard = Keyboard.GetState();
         var pad = GamePad.GetState(playerIndex);
+
+        int pIndex = (int)playerIndex;
+        if ((uint)pIndex >= (uint)_prevGamePadByPlayer.Length)
+            pIndex = 0;
+
+        var prevPad = _prevGamePadByPlayer[pIndex];
 
         float moveX = 0f;
         float moveY = 0f;
@@ -53,37 +62,45 @@ public sealed class InputMapper
             }
         }
 
-        bool serveDown = keyboard.IsKeyDown(Keys.Space) || keyboard.IsKeyDown(Keys.Enter)
-                         || (pad.IsConnected && pad.Buttons.A == ButtonState.Pressed);
-        bool serveWasDown = _prevKeyboard.IsKeyDown(Keys.Space) || _prevKeyboard.IsKeyDown(Keys.Enter)
-                            || (_prevGamePad.IsConnected && _prevGamePad.Buttons.A == ButtonState.Pressed);
+        // Serve (start ball) control.
+        // Keyboard: Enter
+        // Gamepad: A (Xbox) / Cross (PlayStation) OR Y (Triangle) as alternate.
+        // Note: A is also used for catch hold/release; serving uses a pressed event, so holding A won't auto-serve.
+        bool serveDown = keyboard.IsKeyDown(Keys.Enter)
+                         || (pad.IsConnected && (pad.Buttons.A == ButtonState.Pressed || pad.Buttons.Y == ButtonState.Pressed));
+        bool serveWasDown = _prevKeyboard.IsKeyDown(Keys.Enter)
+                            || (prevPad.IsConnected && (prevPad.Buttons.A == ButtonState.Pressed || prevPad.Buttons.Y == ButtonState.Pressed));
 
-        // Space-only catch / launch.
-        bool catchDown = keyboard.IsKeyDown(Keys.Space);
-        bool catchWasDown = _prevKeyboard.IsKeyDown(Keys.Space);
+        // Catch / launch control.
+        // Keyboard: Space.
+        // Gamepad: "south" button (A on Xbox, Cross on PlayStation when mapped through XInput).
+        bool catchDown = keyboard.IsKeyDown(Keys.Space)
+                         || (pad.IsConnected && pad.Buttons.A == ButtonState.Pressed);
+        bool catchWasDown = _prevKeyboard.IsKeyDown(Keys.Space)
+                            || (prevPad.IsConnected && prevPad.Buttons.A == ButtonState.Pressed);
         bool catchPressed = catchDown && !catchWasDown;
         bool catchReleased = !catchDown && catchWasDown;
 
         bool pauseDown = keyboard.IsKeyDown(Keys.P)
                          || (pad.IsConnected && pad.Buttons.Start == ButtonState.Pressed);
         bool pauseWasDown = _prevKeyboard.IsKeyDown(Keys.P)
-                            || (_prevGamePad.IsConnected && _prevGamePad.Buttons.Start == ButtonState.Pressed);
+                            || (prevPad.IsConnected && prevPad.Buttons.Start == ButtonState.Pressed);
 
         bool exitDown = keyboard.IsKeyDown(Keys.Escape)
                         || (pad.IsConnected && pad.Buttons.Back == ButtonState.Pressed);
         bool exitWasDown = _prevKeyboard.IsKeyDown(Keys.Escape)
-                           || (_prevGamePad.IsConnected && _prevGamePad.Buttons.Back == ButtonState.Pressed);
+                           || (prevPad.IsConnected && prevPad.Buttons.Back == ButtonState.Pressed);
 
         // Menu navigation (also works as a secondary control scheme on desktop).
         bool menuUpDown = keyboard.IsKeyDown(Keys.Up) || keyboard.IsKeyDown(Keys.W)
                           || (pad.IsConnected && pad.DPad.Up == ButtonState.Pressed);
         bool menuUpWasDown = _prevKeyboard.IsKeyDown(Keys.Up) || _prevKeyboard.IsKeyDown(Keys.W)
-                             || (_prevGamePad.IsConnected && _prevGamePad.DPad.Up == ButtonState.Pressed);
+                             || (prevPad.IsConnected && prevPad.DPad.Up == ButtonState.Pressed);
 
         bool menuDownDown = keyboard.IsKeyDown(Keys.Down) || keyboard.IsKeyDown(Keys.S)
                             || (pad.IsConnected && pad.DPad.Down == ButtonState.Pressed);
         bool menuDownWasDown = _prevKeyboard.IsKeyDown(Keys.Down) || _prevKeyboard.IsKeyDown(Keys.S)
-                               || (_prevGamePad.IsConnected && _prevGamePad.DPad.Down == ButtonState.Pressed);
+                               || (prevPad.IsConnected && prevPad.DPad.Down == ButtonState.Pressed);
 
         // Left/right in menu: arrow keys / A-D / dpad / stick
         bool menuLeftHeld = keyboard.IsKeyDown(Keys.Left) || keyboard.IsKeyDown(Keys.A)
@@ -112,15 +129,19 @@ public sealed class InputMapper
             else menuMoveY = pad.ThumbSticks.Left.Y;
         }
 
-        // Confirm: Enter/Space/A
-        bool menuConfirmDown = serveDown;
-        bool menuConfirmWasDown = serveWasDown;
+        // Confirm: Enter/Space/A (keep this independent of ServePressed so menu navigation doesn't regress).
+        bool menuConfirmDown = keyboard.IsKeyDown(Keys.Enter)
+                               || keyboard.IsKeyDown(Keys.Space)
+                               || (pad.IsConnected && pad.Buttons.A == ButtonState.Pressed);
+        bool menuConfirmWasDown = _prevKeyboard.IsKeyDown(Keys.Enter)
+                                  || _prevKeyboard.IsKeyDown(Keys.Space)
+                                  || (prevPad.IsConnected && prevPad.Buttons.A == ButtonState.Pressed);
 
         // Back: Escape/B/Back
         bool menuBackDown = keyboard.IsKeyDown(Keys.Back) || keyboard.IsKeyDown(Keys.Escape)
                             || (pad.IsConnected && (pad.Buttons.B == ButtonState.Pressed || pad.Buttons.Back == ButtonState.Pressed));
         bool menuBackWasDown = _prevKeyboard.IsKeyDown(Keys.Back) || _prevKeyboard.IsKeyDown(Keys.Escape)
-                               || (_prevGamePad.IsConnected && (_prevGamePad.Buttons.B == ButtonState.Pressed || _prevGamePad.Buttons.Back == ButtonState.Pressed));
+                               || (prevPad.IsConnected && (prevPad.Buttons.B == ButtonState.Pressed || prevPad.Buttons.Back == ButtonState.Pressed));
 
         var state = new DragonBreakInput(
             moveX,
@@ -143,7 +164,7 @@ public sealed class InputMapper
             menuMoveY: menuMoveY);
 
         _prevKeyboard = keyboard;
-        _prevGamePad = pad;
+        _prevGamePadByPlayer[pIndex] = pad;
 
         return state;
     }

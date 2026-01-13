@@ -466,14 +466,9 @@ public sealed class BreakoutWorld
 
         _ballServing[ballIndex] = false;
 
-        float angle = MathHelper.ToRadians(-90f + _rng.Next(-20, 21));
+        // Polished launch: straight up from the paddle (no random angle).
         float speed = GetTargetBallSpeedForLevel();
-        var v = new Vector2((float)Math.Cos(angle), (float)Math.Sin(angle)) * speed;
-
-        if (Math.Abs(v.X) < 80f)
-            v.X = Math.Sign(v.X == 0 ? 1 : v.X) * 80f;
-
-        _balls[ballIndex].Velocity = v;
+        _balls[ballIndex].Velocity = new Vector2(0f, -speed);
     }
 
     // Replace Update signature to accept multiple players.
@@ -507,12 +502,13 @@ public sealed class BreakoutWorld
 
         UpdateEffects(dt);
 
-        // Update catch armed state (press-to-arm).
+        // Update catch armed state.
+        // Keyboard originally used press-to-arm; for controller we also want hold-to-catch to work naturally.
         if (inputs != null)
         {
             for (int p = 0; p < _activePlayerCount && p < inputs.Length; p++)
             {
-                if (inputs[p].CatchPressed)
+                if (inputs[p].CatchPressed || inputs[p].CatchHeld)
                 {
                     _catchArmedByPlayer[p] = true;
                     _catchArmedConsumedByPlayer[p] = false;
@@ -559,28 +555,30 @@ public sealed class BreakoutWorld
                 _balls[i].Position = _paddles[paddleIndex].Center - new Vector2(0, _balls[i].Radius + 14);
 
                 bool catchReleased = false;
-                bool catchPressed = false;
+                bool servePressed = false;
                 if (inputs != null && (uint)owner < (uint)inputs.Length)
                 {
                     catchReleased = inputs[owner].CatchReleased;
-                    catchPressed = inputs[owner].CatchPressed;
+                    servePressed = inputs[owner].ServePressed;
                 }
 
-                // Space control contract:
-                // - Press arms catching (handled earlier)
-                // - Release launches a serving/attached PRIMARY ball (initial serve or caught)
-                // - Holding alone never launches
+                // Launch rules:
+                // - Space uses press-to-arm + release-to-launch (handled via catchReleased)
+                // - Controller A uses a normal pressed event to launch
+                // - Only primary (colored) balls are launchable/catchable this way
                 bool isPrimary = owner < _primaryBallIndexByPlayer.Count && _primaryBallIndexByPlayer[owner] == i;
 
                 if (!_balls[i].IsExtraBall && isPrimary)
                 {
-                    // If the player is holding Space BEFORE the ball was attached, we still want them
-                    // to be able to launch once they release, but only after an intentional press.
-                    // So: require that catch was pressed at least once (armed) OR that this ball was caught.
                     bool wasCaught = i < _ballCaught.Count && _ballCaught[i];
-                    bool hasIntent = (owner < _catchArmedByPlayer.Count && _catchArmedByPlayer[owner]) || wasCaught || catchPressed;
 
-                    if (catchReleased && hasIntent)
+                    // Consistent launch gesture:
+                    // - If the ball is attached to the paddle (initial serve OR caught), launch on catch button RELEASE.
+                    //   This works well for controller A (hold to catch, release to fire) and for Space.
+                    // - We still keep ServePressed (Y/Triangle) available as an alternate for initial serves.
+                    bool launchRequested = catchReleased || (!wasCaught && servePressed);
+
+                    if (launchRequested)
                     {
                         Serve(i);
 
@@ -589,7 +587,6 @@ public sealed class BreakoutWorld
 
                         if (owner < _catchArmedByPlayer.Count)
                         {
-                            // Clear armed state so they must press again to enable another catch/launch.
                             _catchArmedByPlayer[owner] = false;
                             _catchArmedConsumedByPlayer[owner] = false;
                         }
@@ -859,6 +856,11 @@ public sealed class BreakoutWorld
         float menuX = 0f;
         float menuY = 0f;
 
+        bool upHeldAny = false;
+        bool downHeldAny = false;
+        bool leftHeldAny = false;
+        bool rightHeldAny = false;
+
         if (inputs != null)
         {
             for (int i = 0; i < inputs.Length; i++)
@@ -866,16 +868,22 @@ public sealed class BreakoutWorld
                 confirmPressed |= inputs[i].MenuConfirmPressed || inputs[i].ServePressed;
                 backPressed |= inputs[i].MenuBackPressed;
 
-                // Use the largest-magnitude axis among players (so any controller can drive the menu).
+                // Digital held (DPad/keys) should always work.
+                upHeldAny |= inputs[i].MenuUpHeld;
+                downHeldAny |= inputs[i].MenuDownHeld;
+                leftHeldAny |= inputs[i].MenuLeftHeld;
+                rightHeldAny |= inputs[i].MenuRightHeld;
+
+                // Also allow analog stick navigation.
                 if (Math.Abs(inputs[i].MenuMoveX) > Math.Abs(menuX)) menuX = inputs[i].MenuMoveX;
                 if (Math.Abs(inputs[i].MenuMoveY) > Math.Abs(menuY)) menuY = inputs[i].MenuMoveY;
             }
         }
 
-        bool upHeld = menuY >= MenuAxisDeadzone;
-        bool downHeld = menuY <= -MenuAxisDeadzone;
-        bool leftHeld = menuX <= -MenuAxisDeadzone;
-        bool rightHeld = menuX >= MenuAxisDeadzone;
+        bool upHeld = upHeldAny || menuY >= MenuAxisDeadzone;
+        bool downHeld = downHeldAny || menuY <= -MenuAxisDeadzone;
+        bool leftHeld = leftHeldAny || menuX <= -MenuAxisDeadzone;
+        bool rightHeld = rightHeldAny || menuX >= MenuAxisDeadzone;
 
         // One item per stick "flick" or dpad/keyboard press.
         if (upHeld && !_menuUpConsumed)
@@ -1058,6 +1066,11 @@ public sealed class BreakoutWorld
         float menuX = 0f;
         float menuY = 0f;
 
+        bool upHeldAny = false;
+        bool downHeldAny = false;
+        bool leftHeldAny = false;
+        bool rightHeldAny = false;
+
         if (inputs != null)
         {
             for (int i = 0; i < inputs.Length; i++)
@@ -1065,15 +1078,20 @@ public sealed class BreakoutWorld
                 confirmPressed |= inputs[i].MenuConfirmPressed || inputs[i].ServePressed;
                 backPressed |= inputs[i].MenuBackPressed;
 
+                upHeldAny |= inputs[i].MenuUpHeld;
+                downHeldAny |= inputs[i].MenuDownHeld;
+                leftHeldAny |= inputs[i].MenuLeftHeld;
+                rightHeldAny |= inputs[i].MenuRightHeld;
+
                 if (Math.Abs(inputs[i].MenuMoveX) > Math.Abs(menuX)) menuX = inputs[i].MenuMoveX;
                 if (Math.Abs(inputs[i].MenuMoveY) > Math.Abs(menuY)) menuY = inputs[i].MenuMoveY;
             }
         }
 
-        bool upHeld = menuY >= MenuAxisDeadzone;
-        bool downHeld = menuY <= -MenuAxisDeadzone;
-        bool leftHeld = menuX <= -MenuAxisDeadzone;
-        bool rightHeld = menuX >= MenuAxisDeadzone;
+        bool upHeld = upHeldAny || menuY >= MenuAxisDeadzone;
+        bool downHeld = downHeldAny || menuY <= -MenuAxisDeadzone;
+        bool leftHeld = leftHeldAny || menuX <= -MenuAxisDeadzone;
+        bool rightHeld = rightHeldAny || menuX >= MenuAxisDeadzone;
 
         if (upHeld && !_menuUpConsumed)
         {
@@ -1301,15 +1319,32 @@ public sealed class BreakoutWorld
 
             case PowerUpType.MultiBall:
                 // Spawn one extra ball per player, white, and it never costs lives when lost.
+                // These should launch immediately (not attach to paddle), so multiball feels snappy.
                 for (int pi = 0; pi < _paddles.Count; pi++)
                 {
                     var newBall = new Ball(_paddles[pi].Center - new Vector2(0, 18), radius: 8f, ownerPlayerIndex: pi, isExtraBall: true)
                     {
                         DrawColor = Color.White,
                     };
+
                     _balls.Add(newBall);
-                    _ballServing.Add(true);
+                    _ballServing.Add(false);
                     _ballCaught.Add(false);
+
+                    // Give it an immediate serve with a slight per-player horizontal spread.
+                    int newIndex = _balls.Count - 1;
+
+                    float baseAngleDeg = -90f;
+                    float spread = _paddles.Count <= 1 ? 0f : MathHelper.Lerp(-15f, 15f, pi / (float)Math.Max(1, _paddles.Count - 1));
+                    float angle = MathHelper.ToRadians(baseAngleDeg + spread + _rng.Next(-8, 9));
+
+                    float speed = GetTargetBallSpeedForLevel();
+                    var v = new Vector2((float)Math.Cos(angle), (float)Math.Sin(angle)) * speed;
+
+                    if (Math.Abs(v.X) < 80f)
+                        v.X = Math.Sign(v.X == 0 ? 1 : v.X) * 80f;
+
+                    _balls[newIndex].Velocity = v;
                 }
                 break;
 
@@ -2141,8 +2176,9 @@ public sealed class BreakoutWorld
         // Background
         sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, vp.Height), new Color(16, 16, 20));
 
-        // If we're in menu/settings/interstitial, we still render the playfield background,
-        // but UI is handled via DrawUi() to avoid scissor clipping.
+        // Translate gameplay drawing down so (0,0) in game space maps to the top of the PLAYFIELD,
+        // not the top of the window (which is reserved for the HUD bar).
+        int hudH = GetHudBarHeight(vp);
 
         // Bricks
         for (int i = 0; i < _bricks.Count; i++)
@@ -2164,18 +2200,25 @@ public sealed class BreakoutWorld
                 c = Color.White;
             }
 
-            sb.Draw(_pixel, b.Bounds, c);
+            var r = b.Bounds;
+            r.Y += hudH;
+            sb.Draw(_pixel, r, c);
         }
 
         // Paddles
         for (int i = 0; i < _paddles.Count; i++)
-            sb.Draw(_pixel, _paddles[i].Bounds, PlayerBaseColors[Math.Clamp(i, 0, PlayerBaseColors.Length - 1)]);
+        {
+            var r = _paddles[i].Bounds;
+            r.Y += hudH;
+            sb.Draw(_pixel, r, PlayerBaseColors[Math.Clamp(i, 0, PlayerBaseColors.Length - 1)]);
+        }
 
         // Balls
         for (int i = 0; i < _balls.Count; i++)
         {
             var ball = _balls[i];
             var r = ball.Bounds;
+            r.Y += hudH;
 
             var c = ball.DrawColor ?? (ball.IsExtraBall ? Color.White : PlayerBaseColors[Math.Clamp(ball.OwnerPlayerIndex, 0, PlayerBaseColors.Length - 1)]);
             sb.Draw(_pixel, r, c);
@@ -2183,7 +2226,11 @@ public sealed class BreakoutWorld
 
         // PowerUps
         for (int i = 0; i < _powerUps.Count; i++)
-            sb.Draw(_pixel, _powerUps[i].Bounds, Color.Gold);
+        {
+            var r = _powerUps[i].Bounds;
+            r.Y += hudH;
+            sb.Draw(_pixel, r, Color.Gold);
+        }
     }
 
     /// <summary>
@@ -2191,7 +2238,7 @@ public sealed class BreakoutWorld
     /// </summary>
     public void DrawUi(SpriteBatch sb, Viewport vp)
     {
-        // Menu / settings take over the screen.
+        // For now, if we're in menu/settings we only show those screens.
         if (_mode == WorldMode.Menu)
         {
             DrawMenu(sb, vp);
@@ -2204,7 +2251,7 @@ public sealed class BreakoutWorld
             return;
         }
 
-        // Otherwise, show the in-game HUD (single and multiplayer).
+        // In-game HUD + top bar.
         DrawHud(sb, vp);
 
         // Toast (screen-space) anchored to playfield bottom-right.
@@ -2221,7 +2268,6 @@ public sealed class BreakoutWorld
             float x = playfield.X + playfield.Width - margin - size.X;
             float y = playfield.Y + playfield.Height - margin - size.Y;
 
-            // Simple fade out.
             float a = MathHelper.Clamp(_toastTimeLeft / ToastDurationSeconds, 0f, 1f);
             var col = Color.White * a;
             var shadow = Color.Black * (0.65f * a);

@@ -27,24 +27,12 @@ public sealed class BreakoutAudio
     private TimeSpan _lastBrickSfxAt = TimeSpan.Zero;
     private readonly TimeSpan _brickSfxCooldown = TimeSpan.FromMilliseconds(35);
 
-    private SoundEffect? _brickBreak1;
-
     public void Load(ContentManager content)
     {
         // Music
         _bgm = content.Load<Song>("Audio/Music/lofi-city");
 
-        // Single explicit SFX requested by gameplay.
-        try
-        {
-            _brickBreak1 = content.Load<SoundEffect>("Audio/SFX/brick-break-1");
-        }
-        catch
-        {
-            _brickBreak1 = null;
-        }
-
-        // SFX (optional: project will still run if you haven't added them yet)
+        // Brick hit set (optional).
         _brickHit = LoadOptionalSet(content,
             "Audio/SFX/Bricks/brick_hit_01",
             "Audio/SFX/Bricks/brick_hit_02",
@@ -53,11 +41,20 @@ public sealed class BreakoutAudio
             "Audio/SFX/Bricks/brick_hit_05",
             "Audio/SFX/Bricks/brick_hit_06");
 
+        // Brick break set: use every available clip for variety.
+        // These assets are included in the content pipeline.
         _brickBreak = LoadOptionalSet(content,
-            "Audio/SFX/Bricks/brick_break_01",
-            "Audio/SFX/Bricks/brick_break_02",
-            "Audio/SFX/Bricks/brick_break_03",
-            "Audio/SFX/Bricks/brick_break_04");
+            "Audio/SFX/brick-break-1",
+            "Audio/SFX/impactPlate_light_000",
+            "Audio/SFX/impactPlate_light_001",
+            "Audio/SFX/impactPlate_light_002",
+            "Audio/SFX/impactPlate_light_003",
+            "Audio/SFX/impactPlate_light_004",
+            "Audio/SFX/impactPlate_medium_000",
+            "Audio/SFX/impactPlate_medium_001",
+            "Audio/SFX/impactPlate_medium_002",
+            "Audio/SFX/impactPlate_medium_003",
+            "Audio/SFX/impactPlate_medium_004");
     }
 
     public void PlayBgmLoop()
@@ -96,24 +93,9 @@ public sealed class BreakoutAudio
         _lastBrickSfxAt = totalGameTime;
     }
 
-    public void PlayBrickBreak1(TimeSpan totalGameTime)
-    {
-        if (!CanPlayBrickSfx(totalGameTime))
-            return;
-
-        if (_brickBreak1 != null)
-        {
-            var instance = _brickBreak1.CreateInstance();
-            instance.Pitch = 0f; // consistent
-            instance.Play();
-            _lastBrickSfxAt = totalGameTime;
-        }
-    }
-
     private bool CanPlayBrickSfx(TimeSpan totalGameTime)
     {
-        // If user hasn't provided files yet, arrays are empty.
-        if ((_brickHit.Length == 0) && (_brickBreak.Length == 0) && _brickBreak1 == null)
+        if ((_brickHit.Length == 0) && (_brickBreak.Length == 0))
             return false;
 
         return (totalGameTime - _lastBrickSfxAt) >= _brickSfxCooldown;

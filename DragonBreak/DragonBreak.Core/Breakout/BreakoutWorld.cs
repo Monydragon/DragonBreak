@@ -131,6 +131,9 @@ public sealed class BreakoutWorld
     private readonly List<bool> _catchArmedByPlayer = new();
     private readonly List<bool> _catchArmedConsumedByPlayer = new();
 
+    // Suppress launching while the player is still holding the launch/catch button from a prior screen.
+    private readonly List<bool> _launchSuppressedByPlayer = new();
+
     // Per-ball: was this ball caught (stuck) via catch mechanic (vs initial serve)?
     private readonly List<bool> _ballCaught = new();
 
@@ -346,10 +349,12 @@ public sealed class BreakoutWorld
         // Catch state per player.
         _catchArmedByPlayer.Clear();
         _catchArmedConsumedByPlayer.Clear();
+        _launchSuppressedByPlayer.Clear();
         for (int i = 0; i < _activePlayerCount; i++)
         {
             _catchArmedByPlayer.Add(false);
             _catchArmedConsumedByPlayer.Add(false);
+            _launchSuppressedByPlayer.Add(true);
         }
 
         // Interstitial state reset
@@ -502,6 +507,16 @@ public sealed class BreakoutWorld
 
         UpdateEffects(dt);
 
+        // Clear launch suppression once the player is no longer holding the catch/launch button.
+        if (inputs != null)
+        {
+            for (int p = 0; p < _activePlayerCount && p < inputs.Length && p < _launchSuppressedByPlayer.Count; p++)
+            {
+                if (_launchSuppressedByPlayer[p] && !inputs[p].CatchHeld)
+                    _launchSuppressedByPlayer[p] = false;
+            }
+        }
+
         // Update catch armed state.
         // Keyboard originally used press-to-arm; for controller we also want hold-to-catch to work naturally.
         if (inputs != null)
@@ -558,8 +573,11 @@ public sealed class BreakoutWorld
                 bool servePressed = false;
                 if (inputs != null && (uint)owner < (uint)inputs.Length)
                 {
-                    catchReleased = inputs[owner].CatchReleased;
-                    servePressed = inputs[owner].ServePressed;
+                    // While suppressed, ignore release events caused by exiting menus.
+                    bool suppressed = owner < _launchSuppressedByPlayer.Count && _launchSuppressedByPlayer[owner];
+
+                    catchReleased = !suppressed && inputs[owner].CatchReleased;
+                    servePressed = !suppressed && inputs[owner].ServePressed;
                 }
 
                 bool wasCaught = i < _ballCaught.Count && _ballCaught[i];
@@ -1558,7 +1576,7 @@ public sealed class BreakoutWorld
 
             // SFX
             if (brick.HitPoints <= 0 && beforeHp > 0)
-                _audio.PlayBrickBreak1(_totalTime);
+                _audio.OnBrickBreak(_totalTime);
             else
                 _audio.OnBrickHit(_totalTime);
 

@@ -28,3 +28,53 @@
 /processorParam:PremultiplyAlpha=True
 /processorParam:TextureFormat=Compressed
 /build:Fonts/Hud.spritefont
+
+#begin Audio/SFX/impactPlate_light_000.ogg
+/importer:OggImporter
+/processor:SoundEffectProcessor
+/build:Audio/SFX/impactPlate_light_000.ogg
+
+#begin Audio/SFX/impactPlate_light_001.ogg
+/importer:OggImporter
+/processor:SoundEffectProcessor
+/build:Audio/SFX/impactPlate_light_001.ogg
+
+#begin Audio/SFX/impactPlate_light_002.ogg
+/importer:OggImporter
+/processor:SoundEffectProcessor
+/build:Audio/SFX/impactPlate_light_002.ogg
+
+#begin Audio/SFX/impactPlate_light_003.ogg
+/importer:OggImporter
+/processor:SoundEffectProcessor
+/build:Audio/SFX/impactPlate_light_003.ogg
+
+#begin Audio/SFX/impactPlate_light_004.ogg
+/importer:OggImporter
+/processor:SoundEffectProcessor
+/build:Audio/SFX/impactPlate_light_004.ogg
+
+#begin Audio/SFX/impactPlate_medium_000.ogg
+/importer:OggImporter
+/processor:SoundEffectProcessor
+/build:Audio/SFX/impactPlate_medium_000.ogg
+
+#begin Audio/SFX/impactPlate_medium_001.ogg
+/importer:OggImporter
+/processor:SoundEffectProcessor
+/build:Audio/SFX/impactPlate_medium_001.ogg
+
+#begin Audio/SFX/impactPlate_medium_002.ogg
+/importer:OggImporter
+/processor:SoundEffectProcessor
+/build:Audio/SFX/impactPlate_medium_002.ogg
+
+#begin Audio/SFX/impactPlate_medium_003.ogg
+/importer:OggImporter
+/processor:SoundEffectProcessor
+/build:Audio/SFX/impactPlate_medium_003.ogg
+
+#begin Audio/SFX/impactPlate_medium_004.ogg
+/importer:OggImporter
+/processor:SoundEffectProcessor
+/build:Audio/SFX/impactPlate_medium_004.ogg

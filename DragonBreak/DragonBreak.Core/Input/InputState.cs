@@ -10,6 +10,11 @@ public readonly struct DragonBreakInput
     public bool PausePressed { get; }
     public bool ExitPressed { get; }
 
+    // Space-only catch/launch control (press to arm catch; release to launch).
+    public bool CatchHeld { get; }
+    public bool CatchPressed { get; }
+    public bool CatchReleased { get; }
+
     public bool MenuUpPressed { get; }
     public bool MenuDownPressed { get; }
     public bool MenuConfirmPressed { get; }
@@ -30,6 +35,9 @@ public readonly struct DragonBreakInput
         bool servePressed,
         bool pausePressed,
         bool exitPressed,
+        bool catchHeld = false,
+        bool catchPressed = false,
+        bool catchReleased = false,
         bool menuUpPressed = false,
         bool menuDownPressed = false,
         bool menuConfirmPressed = false,
@@ -46,6 +54,10 @@ public readonly struct DragonBreakInput
         ServePressed = servePressed;
         PausePressed = pausePressed;
         ExitPressed = exitPressed;
+
+        CatchHeld = catchHeld;
+        CatchPressed = catchPressed;
+        CatchReleased = catchReleased;
 
         MenuUpPressed = menuUpPressed;
         MenuDownPressed = menuDownPressed;

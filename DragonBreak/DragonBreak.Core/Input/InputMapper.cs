@@ -58,6 +58,12 @@ public sealed class InputMapper
         bool serveWasDown = _prevKeyboard.IsKeyDown(Keys.Space) || _prevKeyboard.IsKeyDown(Keys.Enter)
                             || (_prevGamePad.IsConnected && _prevGamePad.Buttons.A == ButtonState.Pressed);
 
+        // Space-only catch / launch.
+        bool catchDown = keyboard.IsKeyDown(Keys.Space);
+        bool catchWasDown = _prevKeyboard.IsKeyDown(Keys.Space);
+        bool catchPressed = catchDown && !catchWasDown;
+        bool catchReleased = !catchDown && catchWasDown;
+
         bool pauseDown = keyboard.IsKeyDown(Keys.P)
                          || (pad.IsConnected && pad.Buttons.Start == ButtonState.Pressed);
         bool pauseWasDown = _prevKeyboard.IsKeyDown(Keys.P)
@@ -122,6 +128,9 @@ public sealed class InputMapper
             servePressed: serveDown && !serveWasDown,
             pausePressed: pauseDown && !pauseWasDown,
             exitPressed: exitDown && !exitWasDown,
+            catchHeld: catchDown,
+            catchPressed: catchPressed,
+            catchReleased: catchReleased,
             menuUpPressed: menuUpDown && !menuUpWasDown,
             menuDownPressed: menuDownDown && !menuDownWasDown,
             menuConfirmPressed: menuConfirmDown && !menuConfirmWasDown,

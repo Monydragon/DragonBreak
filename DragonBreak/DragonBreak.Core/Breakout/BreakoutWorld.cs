@@ -127,6 +127,18 @@ public sealed class BreakoutWorld
     private readonly List<int> _livesByPlayer = new();
     private readonly List<int> _scoreByPlayer = new();
 
+    // Catch/serve control
+    private readonly List<bool> _catchArmedByPlayer = new();
+    private readonly List<bool> _catchArmedConsumedByPlayer = new();
+
+    // Per-ball: was this ball caught (stuck) via catch mechanic (vs initial serve)?
+    private readonly List<bool> _ballCaught = new();
+
+    // Powerup toast
+    private string _toastText = string.Empty;
+    private float _toastTimeLeft;
+    private const float ToastDurationSeconds = 1.35f;
+
     private enum GameMode
     {
         Arcade,
@@ -331,10 +343,22 @@ public sealed class BreakoutWorld
         for (int i = 0; i < _activePlayerCount; i++)
             _primaryBallIndexByPlayer.Add(i);
 
+        // Catch state per player.
+        _catchArmedByPlayer.Clear();
+        _catchArmedConsumedByPlayer.Clear();
+        for (int i = 0; i < _activePlayerCount; i++)
+        {
+            _catchArmedByPlayer.Add(false);
+            _catchArmedConsumedByPlayer.Add(false);
+        }
+
         // Interstitial state reset
         _interstitialTimeLeft = 0f;
         _levelInterstitialLine = string.Empty;
         _levelInterstitialWasWin = false;
+
+        _toastText = string.Empty;
+        _toastTimeLeft = 0f;
     }
 
     private void ClearEffects()
@@ -354,6 +378,7 @@ public sealed class BreakoutWorld
         _paddles.Clear();
         _balls.Clear();
         _ballServing.Clear();
+        _ballCaught.Clear();
 
         _basePaddleSize = new Vector2(Math.Max(120, vp.Width / 7), 20);
 
@@ -395,6 +420,7 @@ public sealed class BreakoutWorld
             };
             _balls.Add(ball);
             _ballServing.Add(true);
+            _ballCaught.Add(false);
         }
 
         // Ensure paddles are within vertical limits immediately.
@@ -410,6 +436,8 @@ public sealed class BreakoutWorld
 
         _ballServing[ballIndex] = true;
         _balls[ballIndex].Velocity = Vector2.Zero;
+        if ((uint)ballIndex < (uint)_ballCaught.Count)
+            _ballCaught[ballIndex] = false;
 
         // Attach to the owning paddle if possible.
         int desiredPaddle = Math.Clamp(_balls[ballIndex].OwnerPlayerIndex, 0, _paddles.Count - 1);
@@ -479,6 +507,19 @@ public sealed class BreakoutWorld
 
         UpdateEffects(dt);
 
+        // Update catch armed state (press-to-arm).
+        if (inputs != null)
+        {
+            for (int p = 0; p < _activePlayerCount && p < inputs.Length; p++)
+            {
+                if (inputs[p].CatchPressed)
+                {
+                    _catchArmedByPlayer[p] = true;
+                    _catchArmedConsumedByPlayer[p] = false;
+                }
+            }
+        }
+
         // Update paddles.
         for (int i = 0; i < _paddles.Count; i++)
         {
@@ -512,17 +553,48 @@ public sealed class BreakoutWorld
         {
             if (_ballServing[i])
             {
-                int desiredPaddle = Math.Clamp(_balls[i].OwnerPlayerIndex, 0, _paddles.Count - 1);
-                int paddleIndex = Math.Clamp(desiredPaddle, 0, _paddles.Count - 1);
+                int owner = Math.Clamp(_balls[i].OwnerPlayerIndex, 0, _paddles.Count - 1);
+                int paddleIndex = Math.Clamp(owner, 0, _paddles.Count - 1);
+
                 _balls[i].Position = _paddles[paddleIndex].Center - new Vector2(0, _balls[i].Radius + 14);
 
-                bool servePressed = false;
-                int owner = _balls[i].OwnerPlayerIndex;
+                bool catchReleased = false;
+                bool catchPressed = false;
                 if (inputs != null && (uint)owner < (uint)inputs.Length)
-                    servePressed = inputs[owner].ServePressed;
+                {
+                    catchReleased = inputs[owner].CatchReleased;
+                    catchPressed = inputs[owner].CatchPressed;
+                }
 
-                if (servePressed)
-                    Serve(i);
+                // Space control contract:
+                // - Press arms catching (handled earlier)
+                // - Release launches a serving/attached PRIMARY ball (initial serve or caught)
+                // - Holding alone never launches
+                bool isPrimary = owner < _primaryBallIndexByPlayer.Count && _primaryBallIndexByPlayer[owner] == i;
+
+                if (!_balls[i].IsExtraBall && isPrimary)
+                {
+                    // If the player is holding Space BEFORE the ball was attached, we still want them
+                    // to be able to launch once they release, but only after an intentional press.
+                    // So: require that catch was pressed at least once (armed) OR that this ball was caught.
+                    bool wasCaught = i < _ballCaught.Count && _ballCaught[i];
+                    bool hasIntent = (owner < _catchArmedByPlayer.Count && _catchArmedByPlayer[owner]) || wasCaught || catchPressed;
+
+                    if (catchReleased && hasIntent)
+                    {
+                        Serve(i);
+
+                        if (i < _ballCaught.Count)
+                            _ballCaught[i] = false;
+
+                        if (owner < _catchArmedByPlayer.Count)
+                        {
+                            // Clear armed state so they must press again to enable another catch/launch.
+                            _catchArmedByPlayer[owner] = false;
+                            _catchArmedConsumedByPlayer[owner] = false;
+                        }
+                    }
+                }
 
                 continue;
             }
@@ -530,7 +602,7 @@ public sealed class BreakoutWorld
             _balls[i].Update(dt);
 
             HandleWallCollisions(playfield, _balls[i]);
-            HandlePaddleCollision(_balls[i]);
+            HandlePaddleCollision(i, inputs, playfield);
             HandleBrickCollisions(_balls[i]);
 
             // Ball lost (bottom of playfield)
@@ -593,6 +665,7 @@ public sealed class BreakoutWorld
                 if (p.Bounds.Intersects(_paddles[pi].Bounds))
                 {
                     ApplyPowerUp(p.Type);
+                    ShowToast(GetPowerUpToastText(p.Type), ToastDurationSeconds);
                     p.IsAlive = false;
                     break;
                 }
@@ -611,7 +684,12 @@ public sealed class BreakoutWorld
 
     private void TrySpawnPowerUp(Rectangle brickBounds)
     {
-        if (_rng.NextDouble() > _preset.PowerUpDropChance)
+        // Read chance from settings (configurable), falling back to defaults.
+        var gameplay = _settings?.Current.Gameplay ?? GameplaySettings.Default;
+        float chance = gameplay.GetPowerUpDropChance(_selectedDifficultyId);
+        chance = MathHelper.Clamp(chance, 0f, 1f);
+
+        if (_rng.NextDouble() > chance)
             return;
 
         double roll = _rng.NextDouble();
@@ -1231,6 +1309,7 @@ public sealed class BreakoutWorld
                     };
                     _balls.Add(newBall);
                     _ballServing.Add(true);
+                    _ballCaught.Add(false);
                 }
                 break;
 
@@ -1247,6 +1326,17 @@ public sealed class BreakoutWorld
 
     private void UpdateEffects(float dt)
     {
+        // Toast timer first (so it updates everywhere gameplay updates)
+        if (_toastTimeLeft > 0f)
+        {
+            _toastTimeLeft -= dt;
+            if (_toastTimeLeft <= 0f)
+            {
+                _toastTimeLeft = 0f;
+                _toastText = string.Empty;
+            }
+        }
+
         if (_paddleWidthTimeLeft > 0f)
         {
             _paddleWidthTimeLeft -= dt;
@@ -1326,14 +1416,60 @@ public sealed class BreakoutWorld
         }
     }
 
-    private void HandlePaddleCollision(Ball ball)
+    private void HandlePaddleCollision(int ballIndex, DragonBreakInput[] inputs, Viewport playfield)
     {
+        if ((uint)ballIndex >= (uint)_balls.Count) return;
+
+        var ball = _balls[ballIndex];
+
         for (int pi = 0; pi < _paddles.Count; pi++)
         {
             var paddle = _paddles[pi];
             if (!ball.Bounds.Intersects(paddle.Bounds))
                 continue;
 
+            // Only the owning paddle can catch/bounce this ball.
+            int owner = Math.Clamp(ball.OwnerPlayerIndex, 0, _paddles.Count - 1);
+            if (pi != owner)
+            {
+                // Still allow bounce on other paddles (multiplayer overlap), but do not allow catch.
+            }
+
+            bool canCatch = false;
+            if (pi == owner && !ball.IsExtraBall)
+            {
+                bool isPrimary = owner < _primaryBallIndexByPlayer.Count && _primaryBallIndexByPlayer[owner] == ballIndex;
+
+                bool held = inputs != null && (uint)owner < (uint)inputs.Length && inputs[owner].CatchHeld;
+
+                // Only catch if the ball is above the paddle (and moving down or stationary).
+                bool ballAbovePaddle = ball.Position.Y < paddle.Bounds.Top;
+                bool movingDown = ball.Velocity.Y >= 0f;
+
+                bool armed = owner < _catchArmedByPlayer.Count && _catchArmedByPlayer[owner] && !(_catchArmedConsumedByPlayer.Count > owner && _catchArmedConsumedByPlayer[owner]);
+
+                canCatch = isPrimary && held && ballAbovePaddle && movingDown && armed;
+            }
+
+            if (canCatch)
+            {
+                _ballServing[ballIndex] = true;
+                if (ballIndex < _ballCaught.Count)
+                    _ballCaught[ballIndex] = true;
+
+                ball.Velocity = Vector2.Zero;
+
+                // Attach to paddle.
+                ball.Position = paddle.Center - new Vector2(0, ball.Radius + 14);
+
+                if (owner < _catchArmedConsumedByPlayer.Count)
+                    _catchArmedConsumedByPlayer[owner] = true;
+
+                // Only collide with one paddle per update.
+                break;
+            }
+
+            // Normal bounce.
             ball.Position.Y = paddle.Bounds.Top - ball.Radius - 0.5f;
 
             float speed = ball.Velocity.Length();
@@ -2070,5 +2206,49 @@ public sealed class BreakoutWorld
 
         // Otherwise, show the in-game HUD (single and multiplayer).
         DrawHud(sb, vp);
+
+        // Toast (screen-space) anchored to playfield bottom-right.
+        if (_hudFont != null && _toastTimeLeft > 0f && !string.IsNullOrWhiteSpace(_toastText))
+        {
+            var playfield = GetPlayfieldViewport(vp);
+
+            var ui = _settings?.Current.Ui ?? UiSettings.Default;
+            float scale = MathHelper.Clamp(ui.HudScale, 0.5f, 2.5f);
+
+            Vector2 size = _hudFont.MeasureString(_toastText) * scale;
+
+            const float margin = 12f;
+            float x = playfield.X + playfield.Width - margin - size.X;
+            float y = playfield.Y + playfield.Height - margin - size.Y;
+
+            // Simple fade out.
+            float a = MathHelper.Clamp(_toastTimeLeft / ToastDurationSeconds, 0f, 1f);
+            var col = Color.White * a;
+            var shadow = Color.Black * (0.65f * a);
+
+            sb.DrawString(_hudFont, _toastText, new Vector2(x + 1, y + 1), shadow, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawString(_hudFont, _toastText, new Vector2(x, y), col, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+        }
     }
+
+    private void ShowToast(string text, float durationSeconds)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        _toastText = text;
+        _toastTimeLeft = Math.Max(_toastTimeLeft, durationSeconds);
+    }
+
+    private static string GetPowerUpToastText(PowerUpType type)
+        => type switch
+        {
+            PowerUpType.ExpandPaddle => "Paddle expanded",
+            PowerUpType.SlowBall => "Ball slowed",
+            PowerUpType.FastBall => "Ball sped up",
+            PowerUpType.ExtraLife => "+1 Life",
+            PowerUpType.ScoreBoost => "Score x2",
+            PowerUpType.MultiBall => "Multiball",
+            _ => type.ToString(),
+        };
 }

@@ -24,6 +24,10 @@ namespace DragonBreak.Core
         private readonly InputMapper _input = new();
         private readonly BreakoutWorld _world = new();
 
+        // Cache rasterizer states (avoid allocating per-frame).
+        private static readonly RasterizerState RasterScissorOn = new() { ScissorTestEnable = true };
+        private static readonly RasterizerState RasterScissorOff = new() { ScissorTestEnable = false };
+
         private readonly SettingsStore _settingsStore;
         private readonly SettingsManager _settings;
         private readonly DisplayModeService _displayModes;
@@ -181,8 +185,31 @@ namespace DragonBreak.Core
         {
             GraphicsDevice.Clear(Color.Black);
 
-            _spriteBatch.Begin(samplerState: SamplerState.PointClamp);
-            _world.Draw(_spriteBatch, GraphicsDevice.Viewport);
+            var full = GraphicsDevice.Viewport;
+            int hudH = Math.Clamp(96, 0, Math.Max(0, full.Height - 1));
+            var playfieldRect = new Rectangle(full.X, full.Y + hudH, full.Width, Math.Max(1, full.Height - hudH));
+
+            // Pass 1: gameplay clipped to the playfield (below the top HUD bar).
+            var prevScissor = GraphicsDevice.ScissorRectangle;
+            GraphicsDevice.ScissorRectangle = playfieldRect;
+
+            _spriteBatch.Begin(
+                samplerState: SamplerState.PointClamp,
+                rasterizerState: RasterScissorOn);
+
+            _world.Draw(_spriteBatch, full);
+            _spriteBatch.End();
+
+            // Restore scissor.
+            GraphicsDevice.ScissorRectangle = prevScissor;
+
+            // Pass 2: UI (HUD/top bar/menus) un-clipped.
+            // This ensures the top black bar + HUD can render above the playfield.
+            _spriteBatch.Begin(
+                samplerState: SamplerState.PointClamp,
+                rasterizerState: RasterScissorOff);
+
+            _world.DrawUi(_spriteBatch, full);
             _spriteBatch.End();
 
             base.Draw(gameTime);

@@ -9,6 +9,7 @@ using DragonBreak.Core.Settings;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Content;
 using Microsoft.Xna.Framework.Graphics;
+using System.Security.Cryptography;
 
 namespace DragonBreak.Core.Breakout;
 
@@ -197,6 +198,10 @@ public sealed class BreakoutWorld
         ContinueMode,
         AutoContinueSeconds,
 
+        LevelSeed,
+        LevelSeedRandomize,
+        LevelSeedReset,
+
         Apply,
         Cancel,
     }
@@ -212,6 +217,22 @@ public sealed class BreakoutWorld
     private TimeSpan _totalTime;
 
     private int _levelIndex;
+
+    // A dedicated top UI bar that is not part of the playable area.
+    // Gameplay (paddles/balls/bricks) is simulated in a playfield viewport below this.
+    private const int TopHudBarHeightPixels = 96;
+
+    private static Viewport GetPlayfieldViewport(Viewport full)
+    {
+        // Keep at least a 1px-tall playfield to avoid negative sizes on tiny windows.
+        int y = Math.Clamp(TopHudBarHeightPixels, 0, Math.Max(0, full.Height - 1));
+        int height = Math.Max(1, full.Height - y);
+
+        return new Viewport(full.X, full.Y + y, full.Width, height);
+    }
+
+    private static int GetHudBarHeight(Viewport full)
+        => Math.Clamp(TopHudBarHeightPixels, 0, Math.Max(0, full.Height - 1));
 
     public void Load(GraphicsDevice graphicsDevice, ContentManager content)
     {
@@ -299,8 +320,10 @@ public sealed class BreakoutWorld
         _powerUps.Clear();
         ClearEffects();
 
-        CreateEntitiesForViewport(vp);
-        LoadLevel(vp, _levelIndex);
+        // Create entities using the playable area only.
+        var playfield = GetPlayfieldViewport(vp);
+        CreateEntitiesForViewport(playfield);
+        LoadLevel(playfield, _levelIndex);
         ResetBallOnPaddle();
 
         // Primary balls: one per player (the initial balls created in CreateEntitiesForViewport).
@@ -451,6 +474,9 @@ public sealed class BreakoutWorld
             return;
         }
 
+        // Gameplay uses the playfield viewport (below the HUD bar).
+        var playfield = GetPlayfieldViewport(vp);
+
         UpdateEffects(dt);
 
         // Update paddles.
@@ -461,10 +487,10 @@ public sealed class BreakoutWorld
             _paddles[i] = p;
         }
 
-        ApplyPaddleSize(vp);
+        ApplyPaddleSize(playfield);
 
-        float maxY = vp.Height - PaddleBottomPaddingPixels;
-        float minY = Math.Max(0f, vp.Height * PaddleMaxUpScreenFraction);
+        float maxY = playfield.Height - PaddleBottomPaddingPixels;
+        float minY = Math.Max(0f, playfield.Height * PaddleMaxUpScreenFraction);
 
         for (int i = 0; i < _paddles.Count; i++)
         {
@@ -476,10 +502,10 @@ public sealed class BreakoutWorld
                 moveY = inputs[i].MoveY;
             }
 
-            _paddles[i].Update(dt, moveX, moveY, vp.Width, minY, maxY);
+            _paddles[i].Update(dt, moveX, moveY, playfield.Width, minY, maxY);
         }
 
-        UpdatePowerUps(dt, vp);
+        UpdatePowerUps(dt, playfield);
 
         // Serve handling: each player's serve only launches their own ball(s).
         for (int i = 0; i < _balls.Count; i++)
@@ -503,14 +529,14 @@ public sealed class BreakoutWorld
 
             _balls[i].Update(dt);
 
-            HandleWallCollisions(vp, _balls[i]);
+            HandleWallCollisions(playfield, _balls[i]);
             HandlePaddleCollision(_balls[i]);
             HandleBrickCollisions(_balls[i]);
 
-            // Ball lost
-            if (_balls[i].Position.Y - _balls[i].Radius > vp.Height)
+            // Ball lost (bottom of playfield)
+            if (_balls[i].Position.Y - _balls[i].Radius > playfield.Height)
             {
-                OnBallLost(i, vp);
+                OnBallLost(i, playfield);
                 return; // mode may change; safe early-exit
             }
         }
@@ -548,6 +574,76 @@ public sealed class BreakoutWorld
                 OnLevelCleared(vp);
         }
     }
+
+    private void UpdatePowerUps(float dt, Viewport vp)
+    {
+        for (int i = _powerUps.Count - 1; i >= 0; i--)
+        {
+            var p = _powerUps[i];
+            if (!p.IsAlive)
+            {
+                _powerUps.RemoveAt(i);
+                continue;
+            }
+
+            p.Update(dt);
+
+            for (int pi = 0; pi < _paddles.Count; pi++)
+            {
+                if (p.Bounds.Intersects(_paddles[pi].Bounds))
+                {
+                    ApplyPowerUp(p.Type);
+                    p.IsAlive = false;
+                    break;
+                }
+            }
+
+            if (!p.IsAlive)
+            {
+                _powerUps.RemoveAt(i);
+                continue;
+            }
+
+            if (p.Position.Y - p.Size.Y > vp.Height + 40)
+                _powerUps.RemoveAt(i);
+        }
+    }
+
+    private void TrySpawnPowerUp(Rectangle brickBounds)
+    {
+        if (_rng.NextDouble() > _preset.PowerUpDropChance)
+            return;
+
+        double roll = _rng.NextDouble();
+        PowerUpType type = roll switch
+        {
+            < 0.24 => PowerUpType.ExpandPaddle,
+            < 0.43 => PowerUpType.SlowBall,
+            < 0.58 => PowerUpType.ScoreBoost,
+            < 0.73 => PowerUpType.FastBall,
+            < 0.88 => PowerUpType.MultiBall,
+            _ => PowerUpType.ExtraLife,
+        };
+
+        var pos = new Vector2(brickBounds.Center.X, brickBounds.Center.Y);
+        _powerUps.Add(new PowerUp(type, pos));
+    }
+
+    private string DifficultyLabel(int presetIndex)
+    {
+        presetIndex = Math.Clamp(presetIndex, 0, Presets.Length - 1);
+        // Title-case-ish for display.
+        return Presets[presetIndex].Name;
+    }
+
+    private string ContinueModeLabel(ContinueMode mode)
+        => mode switch
+        {
+            ContinueMode.Auto => "auto",
+            ContinueMode.Prompt => "prompt",
+            ContinueMode.PromptThenAuto => "prompt+auto",
+            _ => mode.ToString(),
+        };
 
     private void OnLevelCleared(Viewport vp)
     {
@@ -929,7 +1025,27 @@ public sealed class BreakoutWorld
 
         if (confirmPressed)
         {
-            if (_settingsItem == SettingsItem.Apply)
+            if (_settingsItem == SettingsItem.LevelSeedRandomize)
+            {
+                // Crypto-random seed for user-driven re-rolls.
+                var pending = _settings.Pending;
+                if (pending != null)
+                {
+                    int seed = RandomNumberGenerator.GetInt32(int.MinValue, int.MaxValue);
+                    var gameplay = pending.Gameplay with { LevelSeed = seed };
+                    _settings.SetPending(pending with { Gameplay = gameplay });
+                }
+            }
+            else if (_settingsItem == SettingsItem.LevelSeedReset)
+            {
+                var pending = _settings.Pending;
+                if (pending != null)
+                {
+                    var gameplay = pending.Gameplay with { LevelSeed = GameplaySettings.Default.LevelSeed };
+                    _settings.SetPending(pending with { Gameplay = gameplay });
+                }
+            }
+            else if (_settingsItem == SettingsItem.Apply)
             {
                 _settings.ApplyPending();
                 SyncSelectionsFromSettings();
@@ -1055,6 +1171,14 @@ public sealed class BreakoutWorld
             {
                 float step = 0.5f;
                 gameplay = gameplay with { AutoContinueSeconds = gameplay.AutoContinueSeconds + dir * step };
+                break;
+            }
+
+            case SettingsItem.LevelSeed:
+            {
+                // Small step for fine tuning; hold right/left to move faster.
+                int step = 1;
+                gameplay = gameplay with { LevelSeed = gameplay.LevelSeed + dir * step };
                 break;
             }
         }
@@ -1257,7 +1381,7 @@ public sealed class BreakoutWorld
 
             // SFX
             if (brick.HitPoints <= 0 && beforeHp > 0)
-                _audio.OnBrickBreak(_totalTime);
+                _audio.PlayBrickBreak1(_totalTime);
             else
                 _audio.OnBrickHit(_totalTime);
 
@@ -1377,36 +1501,144 @@ public sealed class BreakoutWorld
     {
         _bricks.Clear();
 
-        int cols = 10;
-        int baseRows = 5;
-        int rows = Math.Min(13, baseRows + levelIndex / 2);
-
+        // --- Layout bounds (mobile-safe) ---
         int padding = 6;
-        int topMargin = 70;
-        int sideMargin = 30;
-        int brickWidth = (vp.Width - sideMargin * 2 - padding * (cols - 1)) / cols;
-        int brickHeight = 26;
 
-        int hp = 1 + levelIndex / 3;
-        hp = Math.Min(hp, _preset.MaxBrickHp);
+        // Keep bricks from spawning under the HUD (HUD scale may change in settings).
+        int topMarginBase = 70;
+        float hudScale = (_settings?.Current.Ui ?? UiSettings.Default).HudScale;
+        float hudSafeTop = _hudFont != null
+            ? 8f + (_hudFont.LineSpacing * hudScale) * 3.25f
+            : 90f;
+        int topMargin = (int)MathF.Ceiling(MathF.Max(topMarginBase, hudSafeTop));
+
+        int sideMargin = 16;
+        int bottomMargin = 22;
+
+        int availW = Math.Max(1, vp.Width - sideMargin * 2);
+        int availH = Math.Max(1, vp.Height - topMargin - bottomMargin);
+
+        // Choose a brick size that fits smaller/mobile screens.
+        // We prefer smaller bricks rather than fewer rows early.
+        int desiredCols = 10;
+        int minBrickW = 26;
+        int maxBrickW = 86;
+
+        int cols = Math.Clamp(desiredCols, 6, 14);
+        int brickW = (availW - padding * (cols - 1)) / cols;
+
+        // If too small, reduce column count (bigger bricks) until minimum width is met.
+        while (cols > 6 && brickW < minBrickW)
+        {
+            cols--;
+            brickW = (availW - padding * (cols - 1)) / cols;
+        }
+
+        // If too large (giant desktop window), increase columns a bit for nicer density.
+        while (cols < 14 && brickW > maxBrickW)
+        {
+            cols++;
+            brickW = (availW - padding * (cols - 1)) / cols;
+        }
+
+        brickW = Math.Clamp(brickW, minBrickW, maxBrickW);
+
+        int brickH = Math.Clamp((int)MathF.Round(brickW * 0.48f), 16, 30);
+
+        int maxRowsByHeight = Math.Max(1, (availH + padding) / (brickH + padding));
+        int rows = Math.Clamp(4 + levelIndex / 2, 4, Math.Min(13, maxRowsByHeight));
+
+        // Recompute capacity based on rows/cols and some safety.
+        int capacity = Math.Max(1, rows * cols);
+
+        // --- Deterministic RNG: seed + level + difficulty ---
+        int baseSeed = (_settings?.Current.Gameplay ?? GameplaySettings.Default).LevelSeed;
+        int levelSeed = HashSeed(baseSeed, levelIndex, (int)_selectedDifficultyId);
+        var rng = new Random(levelSeed);
+
+        // --- Difficulty-bound scaling ---
+        // Harder difficulties ramp density slightly faster.
+        int difficultyIndex = Math.Clamp(DifficultyToPresetIndex(_selectedDifficultyId), 0, Presets.Length - 1);
+        float difficultyT = difficultyIndex / (float)Math.Max(1, Presets.Length - 1);
+
+        // Target bricks: odd ramp (3,5,7,...) but limited by capacity.
+        int baseTarget = 3 + levelIndex * 2;
+        int bonus = (int)MathF.Round(difficultyT * Math.Min(10, levelIndex));
+        int target = baseTarget + bonus;
+        if ((target & 1) == 0) target++; // keep odd
+
+        // Avoid filling the whole board: keep at most ~80% density.
+        int maxTarget = (int)MathF.Floor(capacity * 0.80f);
+        target = Math.Clamp(target, 1, Math.Max(1, maxTarget));
+
+        // HP ramps slower; use preset cap.
+        int baseHp = 1 + levelIndex / 3;
+        baseHp = Math.Min(baseHp, _preset.MaxBrickHp);
+
+        // --- Generate an occupancy grid (complex shapes) ---
+        // We'll build a boolean grid of [rows, cols], then instantiate bricks.
+        bool[,] occ;
+        if (IsOwnedBricksMode && _activePlayerCount == 2)
+        {
+            // Generate a symmetric layout: build left half, mirror into right half.
+            int leftCols = Math.Max(1, cols / 2);
+            var half = new bool[rows, leftCols];
+            FillOrganic(half, rows, leftCols, target / 2, rng);
+
+            occ = new bool[rows, cols];
+            for (int r = 0; r < rows; r++)
+            {
+                for (int c = 0; c < leftCols; c++)
+                {
+                    bool v = half[r, c];
+                    occ[r, c] = v;
+                    int mirror = cols - 1 - c;
+                    if (mirror >= 0 && mirror < cols)
+                        occ[r, mirror] = v;
+                }
+            }
+        }
+        else
+        {
+            occ = new bool[rows, cols];
+            FillOrganic(occ, rows, cols, target, rng);
+        }
+
+        // Instantiate bricks; apply per-row HP bias but stay inside difficulty bounds.
+        int startX = sideMargin;
+        int startY = topMargin;
 
         for (int r = 0; r < rows; r++)
         {
+            int rowBonus = r / 3;
+            int brickHp = Math.Min(baseHp + rowBonus, _preset.MaxBrickHp);
+
             for (int c = 0; c < cols; c++)
             {
-                float holeChance = MathHelper.Clamp(0.06f + levelIndex * 0.012f, 0.06f, 0.30f);
-                if (_rng.NextDouble() < holeChance) continue;
+                if (!occ[r, c])
+                    continue;
 
-                int x = sideMargin + c * (brickWidth + padding);
-                int y = topMargin + r * (brickHeight + padding);
-                var bounds = new Rectangle(x, y, brickWidth, brickHeight);
+                int x = startX + c * (brickW + padding);
+                int y = startY + r * (brickH + padding);
 
-                int rowBonus = r / 3;
-                int brickHp = Math.Min(hp + rowBonus, _preset.MaxBrickHp);
+                // Safety: stay within bounds.
+                if (x < sideMargin || x + brickW > vp.Width - sideMargin) continue;
+                if (y < topMargin || y + brickH > vp.Height - bottomMargin) continue;
+
+                var bounds = new Rectangle(x, y, brickW, brickH);
 
                 if (IsOwnedBricksMode)
                 {
-                    int owner = Math.Clamp((int)((float)c / cols * _activePlayerCount), 0, _activePlayerCount - 1);
+                    int owner;
+                    if (_activePlayerCount == 2)
+                    {
+                        owner = c < cols / 2 ? 0 : 1;
+                    }
+                    else
+                    {
+                        owner = Math.Clamp((int)((float)c / cols * _activePlayerCount), 0, _activePlayerCount - 1);
+                    }
+
                     _bricks.Add(new Brick(bounds, brickHp, PaletteForHpOwned(brickHp, owner), ownerPlayerIndex: owner));
                 }
                 else
@@ -1416,85 +1648,151 @@ public sealed class BreakoutWorld
             }
         }
 
+        // Failsafe: always at least one brick.
         if (_bricks.Count == 0)
         {
-            var bounds = new Rectangle(sideMargin, topMargin, brickWidth, brickHeight);
+            var bounds = new Rectangle(sideMargin, topMargin, brickW, brickH);
             if (IsOwnedBricksMode)
-                _bricks.Add(new Brick(bounds, hp, PaletteForHpOwned(hp, 0), ownerPlayerIndex: 0));
+                _bricks.Add(new Brick(bounds, baseHp, PaletteForHpOwned(baseHp, 0), ownerPlayerIndex: 0));
             else
-                _bricks.Add(new Brick(bounds, hp, PaletteForHp(hp)));
+                _bricks.Add(new Brick(bounds, baseHp, PaletteForHp(baseHp)));
         }
     }
 
-    private void UpdatePowerUps(float dt, Viewport vp)
+    private static int HashSeed(int baseSeed, int levelIndex, int difficultyId)
     {
-        for (int i = _powerUps.Count - 1; i >= 0; i--)
+        unchecked
         {
-            var p = _powerUps[i];
-            if (!p.IsAlive)
-            {
-                _powerUps.RemoveAt(i);
-                continue;
-            }
+            // Simple stable mix (FNV-ish).
+            int h = (int)2166136261;
+            h = (h ^ baseSeed) * 16777619;
+            h = (h ^ levelIndex) * 16777619;
+            h = (h ^ difficultyId) * 16777619;
+            // Avoid 0 seed edge.
+            return h == 0 ? 1 : h;
+        }
+    }
 
-            p.Update(dt);
+    private static void FillOrganic(bool[,] occ, int rows, int cols, int target, Random rng)
+    {
+        if (target <= 0) return;
 
-            for (int pi = 0; pi < _paddles.Count; pi++)
+        int placed = 0;
+        int maxAttempts = Math.Max(200, target * 40);
+
+        // Weight towards arcs (complex) with a secondary cluster pass.
+        int arcCount = Math.Clamp(1 + target / 10, 1, 4);
+        int clusterCount = Math.Clamp(1 + target / 14, 1, 3);
+
+        // --- Arc/snaking paths ---
+        for (int a = 0; a < arcCount && placed < target; a++)
+        {
+            // Start near top, wander downward.
+            float x = rng.Next(0, cols);
+            float y = rng.Next(0, Math.Max(1, rows / 2));
+            float dx = (float)(rng.NextDouble() * 2 - 1) * 0.9f;
+            float dy = 0.6f + (float)rng.NextDouble() * 0.8f;
+
+            int steps = Math.Clamp(target / arcCount + rng.Next(-2, 5), 4, rows * cols);
+            for (int i = 0; i < steps && placed < target; i++)
             {
-                if (p.Bounds.Intersects(_paddles[pi].Bounds))
+                int r = Math.Clamp((int)MathF.Round(y), 0, rows - 1);
+                int c = Math.Clamp((int)MathF.Round(x), 0, cols - 1);
+
+                placed += TryPlace(occ, rows, cols, r, c);
+
+                // Occasionally widen path.
+                if (rng.NextDouble() < 0.20 && placed < target)
                 {
-                    ApplyPowerUp(p.Type);
-                    p.IsAlive = false;
-                    break;
+                    int rr = Math.Clamp(r + rng.Next(-1, 2), 0, rows - 1);
+                    int cc = Math.Clamp(c + rng.Next(-1, 2), 0, cols - 1);
+                    placed += TryPlace(occ, rows, cols, rr, cc);
+                }
+
+                // Move and curve.
+                x += dx + (float)(rng.NextDouble() * 2 - 1) * 0.25f;
+                y += dy;
+
+                // Bounce off side edges.
+                if (x < 0) { x = 0; dx = Math.Abs(dx); }
+                if (x > cols - 1) { x = cols - 1; dx = -Math.Abs(dx); }
+
+                // Slightly change direction.
+                dx = MathHelper.Clamp(dx + (float)(rng.NextDouble() * 2 - 1) * 0.18f, -1.2f, 1.2f);
+
+                if (y > rows - 1) break;
+            }
+        }
+
+        // --- Cluster/blob pass ---
+        for (int k = 0; k < clusterCount && placed < target; k++)
+        {
+            int centerR = rng.Next(0, rows);
+            int centerC = rng.Next(0, cols);
+            int radius = Math.Clamp(1 + target / 18 + rng.Next(0, 2), 1, Math.Max(2, Math.Min(rows, cols) / 2));
+
+            for (int rr = centerR - radius; rr <= centerR + radius && placed < target; rr++)
+            {
+                if ((uint)rr >= (uint)rows) continue;
+
+                for (int cc = centerC - radius; cc <= centerC + radius && placed < target; cc++)
+                {
+                    if ((uint)cc >= (uint)cols) continue;
+
+                    float dr = rr - centerR;
+                    float dc = cc - centerC;
+                    float dist = MathF.Sqrt(dr * dr + dc * dc);
+                    float t = dist / Math.Max(1f, radius);
+
+                    // Higher chance closer to center.
+                    float p = MathHelper.Clamp(0.95f - t * 0.85f, 0.10f, 0.95f);
+                    if (rng.NextDouble() < p)
+                        placed += TryPlace(occ, rows, cols, rr, cc);
                 }
             }
+        }
 
-            if (!p.IsAlive)
-            {
-                _powerUps.RemoveAt(i);
-                continue;
-            }
+        // --- Fill remaining with scattered points (keeps early levels quick) ---
+        for (int attempt = 0; attempt < maxAttempts && placed < target; attempt++)
+        {
+            int r = rng.Next(0, rows);
+            int c = rng.Next(0, cols);
 
-            if (p.Position.Y - p.Size.Y > vp.Height + 40)
-                _powerUps.RemoveAt(i);
+            // Mild bias towards upper rows so bricks are reachable quickly.
+            if (rng.NextDouble() < 0.55)
+                r = rng.Next(0, Math.Max(1, rows - 1));
+
+            placed += TryPlace(occ, rows, cols, r, c);
         }
     }
 
-    private void TrySpawnPowerUp(Rectangle brickBounds)
+    private static int TryPlace(bool[,] occ, int rows, int cols, int r, int c)
     {
-        if (_rng.NextDouble() > _preset.PowerUpDropChance)
-            return;
+        if ((uint)r >= (uint)rows || (uint)c >= (uint)cols)
+            return 0;
 
-        double roll = _rng.NextDouble();
-        PowerUpType type = roll switch
+        if (occ[r, c])
+            return 0;
+
+        // Simple adjacency rule to avoid a super-sparse "dust" look.
+        // Allow isolated bricks sometimes (early levels).
+        int neighbors = 0;
+        for (int dr = -1; dr <= 1; dr++)
         {
-            < 0.24 => PowerUpType.ExpandPaddle,
-            < 0.43 => PowerUpType.SlowBall,
-            < 0.58 => PowerUpType.ScoreBoost,
-            < 0.73 => PowerUpType.FastBall,
-            < 0.88 => PowerUpType.MultiBall,
-            _ => PowerUpType.ExtraLife,
-        };
+            for (int dc = -1; dc <= 1; dc++)
+            {
+                if (dr == 0 && dc == 0) continue;
+                int rr = r + dr;
+                int cc = c + dc;
+                if ((uint)rr >= (uint)rows || (uint)cc >= (uint)cols) continue;
+                if (occ[rr, cc]) neighbors++;
+            }
+        }
 
-        var pos = new Vector2(brickBounds.Center.X, brickBounds.Center.Y);
-        _powerUps.Add(new PowerUp(type, pos));
+        // Place regardless; density is controlled by target. This just assists look.
+        occ[r, c] = true;
+        return 1;
     }
-
-    private string DifficultyLabel(int presetIndex)
-    {
-        presetIndex = Math.Clamp(presetIndex, 0, Presets.Length - 1);
-        // Title-case-ish for display.
-        return Presets[presetIndex].Name;
-    }
-
-    private string ContinueModeLabel(ContinueMode mode)
-        => mode switch
-        {
-            ContinueMode.Auto => "auto",
-            ContinueMode.Prompt => "prompt",
-            ContinueMode.PromptThenAuto => "prompt+auto",
-            _ => mode.ToString(),
-        };
 
     private void DrawCenteredText(SpriteBatch sb, Viewport vp, string text, float y, Color color)
     {
@@ -1590,6 +1888,10 @@ public sealed class BreakoutWorld
             (SettingsItem.ContinueMode, sel(SettingsItem.ContinueMode, $"Continue Mode: {ContinueModeLabel(gameplay.ContinueMode)}")),
             (SettingsItem.AutoContinueSeconds, sel(SettingsItem.AutoContinueSeconds, $"Auto Continue: {gameplay.AutoContinueSeconds:0.0}s")),
 
+            (SettingsItem.LevelSeed, sel(SettingsItem.LevelSeed, $"Level Seed: {gameplay.LevelSeed}")),
+            (SettingsItem.LevelSeedRandomize, sel(SettingsItem.LevelSeedRandomize, "Seed: Randomize")),
+            (SettingsItem.LevelSeedReset, sel(SettingsItem.LevelSeedReset, "Seed: Reset (1337)")),
+
             (SettingsItem.Apply, sel(SettingsItem.Apply, "APPLY")),
             (SettingsItem.Cancel, sel(SettingsItem.Cancel, "CANCEL")),
         };
@@ -1614,16 +1916,28 @@ public sealed class BreakoutWorld
 
         float scale = ui.HudScale;
 
+        // Hard UI bar at the top that is NOT part of the playfield.
+        // This replaces the old translucent overlay behavior.
+        int hudBarH = GetHudBarHeight(vp);
+        if (hudBarH > 0)
+            sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, hudBarH), Color.Black);
+
+        // Keep HUD text inside the bar.
+        float topPadding = 8f;
+        float lineY1 = topPadding;
+        float lineY2 = topPadding + (_hudFont.LineSpacing * scale);
+        float lineY3 = topPadding + (_hudFont.LineSpacing * scale) * 2f;
+
         // Level + mode title in top center.
         string top = $"LEVEL {_levelIndex + 1}   MODE {_selectedGameMode}";
-        var topSize = _hudFont.MeasureString(top) * scale;
-        sb.DrawString(_hudFont, SafeText(top), new Vector2((vp.Width - topSize.X) * 0.5f, 8), Color.White, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+        var topSafe = SafeText(top);
+        var topSize = _hudFont.MeasureString(topSafe) * scale;
+        sb.DrawString(_hudFont, topSafe, new Vector2((vp.Width - topSize.X) * 0.5f, lineY1), Color.White, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
 
         void DrawPlayerPanel(int player, Vector2 anchor, bool rightAlign)
         {
             if (player < 0 || player >= _activePlayerCount)
                 return;
-
             bool show = player switch
             {
                 0 => ui.ShowP1Hud,
@@ -1639,25 +1953,26 @@ public sealed class BreakoutWorld
             string balls = IsCasualNoLose ? "∞" : (player < _livesByPlayer.Count ? _livesByPlayer[player].ToString() : "0");
 
             string text = $"P{player + 1}  SCORE {score}  BALLS {balls}";
-            var size = _hudFont.MeasureString(text) * scale;
+            string safe = SafeText(text);
+            var size = _hudFont.MeasureString(safe) * scale;
 
             Vector2 pos = rightAlign
                 ? new Vector2(anchor.X - size.X, anchor.Y)
                 : anchor;
 
             var color = PlayerBaseColors[Math.Clamp(player, 0, PlayerBaseColors.Length - 1)];
-            sb.DrawString(_hudFont, SafeText(text), pos, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawString(_hudFont, safe, pos, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
         }
 
-        // Player panels in corners on the "3rd line" area (below the title line).
-        float panelY = 8 + (_hudFont.LineSpacing * scale) * 2.0f; // roughly third line
+        // Put all player panels in the top bar.
+        DrawPlayerPanel(0, new Vector2(12, lineY2), rightAlign: false);
+        DrawPlayerPanel(1, new Vector2(vp.Width - 12, lineY2), rightAlign: true);
 
-        DrawPlayerPanel(0, new Vector2(12, panelY), rightAlign: false);
-        DrawPlayerPanel(1, new Vector2(vp.Width - 12, panelY), rightAlign: true);
-        DrawPlayerPanel(2, new Vector2(12, panelY + (_hudFont.LineSpacing * scale)), rightAlign: false);
-        DrawPlayerPanel(3, new Vector2(vp.Width - 12, panelY + (_hudFont.LineSpacing * scale)), rightAlign: true);
+        // If 3–4 players, place them on the third line inside the bar.
+        DrawPlayerPanel(2, new Vector2(12, lineY3), rightAlign: false);
+        DrawPlayerPanel(3, new Vector2(vp.Width - 12, lineY3), rightAlign: true);
 
-        // Interstitial prompt line
+        // Interstitial prompt line: keep it in the HUD bar if possible; otherwise fall back to bottom.
         if (_mode == WorldMode.LevelInterstitial)
         {
             string prompt = (_settings?.Current.Gameplay.ContinueMode ?? ContinueMode.PromptThenAuto) == ContinueMode.Prompt
@@ -1665,35 +1980,40 @@ public sealed class BreakoutWorld
                 : "Continue or nah? (Confirm)  |  auto...";
 
             string line = $"{prompt}   {_levelInterstitialLine}";
-            sb.DrawString(_hudFont, SafeText(line), new Vector2(12, vp.Height - (12 + _hudFont.LineSpacing * scale)), _levelInterstitialWasWin ? new Color(120, 235, 120) : new Color(255, 120, 80), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            string safeLine = SafeText(line);
+
+            float y = lineY3 + (_hudFont.LineSpacing * scale);
+            bool fitsTop = y + (_hudFont.LineSpacing * scale) <= hudBarH;
+
+            if (fitsTop)
+            {
+                sb.DrawString(_hudFont, safeLine, new Vector2(12, y), _levelInterstitialWasWin ? new Color(120, 235, 120) : new Color(255, 120, 80), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            }
+            else
+            {
+                sb.DrawString(_hudFont, safeLine, new Vector2(12, vp.Height - (12 + _hudFont.LineSpacing * scale)), _levelInterstitialWasWin ? new Color(120, 235, 120) : new Color(255, 120, 80), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            }
         }
     }
 
+    /// <summary>
+    /// Draws gameplay only (playfield: bricks/paddles/balls/powerups).
+    /// This is intended to be called with a scissor rect that clips to the playfield.
+    /// </summary>
     public void Draw(SpriteBatch sb, Viewport vp)
     {
         // Background
         sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, vp.Height), new Color(16, 16, 20));
 
-        // If we're in menu/settings, show UI instead of confusing gameplay rendering.
-        if (_mode == WorldMode.Menu)
-        {
-            DrawMenu(sb, vp);
-            return;
-        }
-        if (_mode == WorldMode.Settings)
-        {
-            DrawSettings(sb, vp);
-            return;
-        }
+        // If we're in menu/settings/interstitial, we still render the playfield background,
+        // but UI is handled via DrawUi() to avoid scissor clipping.
 
-        // Gameplay render below.
         // Bricks
         for (int i = 0; i < _bricks.Count; i++)
         {
             var b = _bricks[i];
             if (!b.IsAlive) continue;
 
-            // Brick has a Palette (by HP). If palette isn't available, fall back.
             Color c = Color.White;
             try
             {
@@ -1725,11 +2045,30 @@ public sealed class BreakoutWorld
             sb.Draw(_pixel, r, c);
         }
 
-        // PowerUps (simple)
+        // PowerUps
         for (int i = 0; i < _powerUps.Count; i++)
             sb.Draw(_pixel, _powerUps[i].Bounds, Color.Gold);
+    }
 
-        // New scalable per-player HUD.
+    /// <summary>
+    /// Draws screen-space UI (menus/settings/HUD/top bar). Call this WITHOUT scissor.
+    /// </summary>
+    public void DrawUi(SpriteBatch sb, Viewport vp)
+    {
+        // Menu / settings take over the screen.
+        if (_mode == WorldMode.Menu)
+        {
+            DrawMenu(sb, vp);
+            return;
+        }
+
+        if (_mode == WorldMode.Settings)
+        {
+            DrawSettings(sb, vp);
+            return;
+        }
+
+        // Otherwise, show the in-game HUD (single and multiplayer).
         DrawHud(sb, vp);
     }
 }

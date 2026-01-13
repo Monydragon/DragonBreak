@@ -27,10 +27,22 @@ public sealed class BreakoutAudio
     private TimeSpan _lastBrickSfxAt = TimeSpan.Zero;
     private readonly TimeSpan _brickSfxCooldown = TimeSpan.FromMilliseconds(35);
 
+    private SoundEffect? _brickBreak1;
+
     public void Load(ContentManager content)
     {
         // Music
         _bgm = content.Load<Song>("Audio/Music/lofi-city");
+
+        // Single explicit SFX requested by gameplay.
+        try
+        {
+            _brickBreak1 = content.Load<SoundEffect>("Audio/SFX/brick-break-1");
+        }
+        catch
+        {
+            _brickBreak1 = null;
+        }
 
         // SFX (optional: project will still run if you haven't added them yet)
         _brickHit = LoadOptionalSet(content,
@@ -84,10 +96,24 @@ public sealed class BreakoutAudio
         _lastBrickSfxAt = totalGameTime;
     }
 
+    public void PlayBrickBreak1(TimeSpan totalGameTime)
+    {
+        if (!CanPlayBrickSfx(totalGameTime))
+            return;
+
+        if (_brickBreak1 != null)
+        {
+            var instance = _brickBreak1.CreateInstance();
+            instance.Pitch = 0f; // consistent
+            instance.Play();
+            _lastBrickSfxAt = totalGameTime;
+        }
+    }
+
     private bool CanPlayBrickSfx(TimeSpan totalGameTime)
     {
         // If user hasn't provided files yet, arrays are empty.
-        if ((_brickHit.Length == 0) && (_brickBreak.Length == 0))
+        if ((_brickHit.Length == 0) && (_brickBreak.Length == 0) && _brickBreak1 == null)
             return false;
 
         return (totalGameTime - _lastBrickSfxAt) >= _brickSfxCooldown;
@@ -127,4 +153,3 @@ public sealed class BreakoutAudio
         return list.ToArray();
     }
 }
-

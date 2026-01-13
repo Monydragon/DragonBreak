@@ -17,6 +17,11 @@
 /processor:SongProcessor
 /build:Audio/Music/lofi-city.mp3
 
+#begin Audio/SFX/brick-break-1.mp3
+/importer:Mp3Importer
+/processor:SoundEffectProcessor
+/build:Audio/SFX/brick-break-1.mp3
+
 #begin Fonts/Hud.spritefont
 /importer:FontDescriptionImporter
 /processor:FontDescriptionProcessor

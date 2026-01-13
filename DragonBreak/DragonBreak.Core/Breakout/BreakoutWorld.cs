@@ -3,6 +3,7 @@ using System;
 using System.Collections.Generic;
 using DragonBreak.Core.Audio;
 using DragonBreak.Core.Breakout.Entities;
+using DragonBreak.Core.Breakout.Ui;
 using DragonBreak.Core.Graphics;
 using DragonBreak.Core.Input;
 using DragonBreak.Core.Settings;
@@ -51,6 +52,7 @@ public sealed class BreakoutWorld
         Settings,
         Playing,
         LevelInterstitial,
+        Paused,
     }
 
     private readonly struct DifficultyPreset
@@ -190,6 +192,10 @@ public sealed class BreakoutWorld
     private bool _menuLeftConsumed;
     private bool _menuRightConsumed;
 
+    // Settings debouncing so left/right changes only move one step per input.
+    private bool _settingsLeftConsumed;
+    private bool _settingsRightConsumed;
+
     private const float MenuAxisDeadzone = 0.55f;
 
     // Paddle movement configuration (easy to tweak):
@@ -249,6 +255,9 @@ public sealed class BreakoutWorld
     private int _resolutionIndex;
 
     private readonly BreakoutAudio _audio = new();
+
+    // Pause menu UI state
+    private readonly PauseMenuScreen _pauseMenu = new();
 
     private TimeSpan _totalTime;
 
@@ -588,8 +597,21 @@ public sealed class BreakoutWorld
             return;
         }
 
+        if (_mode == WorldMode.Paused)
+        {
+            UpdatePaused(inputs, vp, dt);
+            return;
+        }
+
         // Gameplay uses the playfield viewport (below the HUD bar).
         var playfield = GetPlayfieldViewport(vp);
+
+        // Allow pausing during gameplay.
+        if (AnyPausePressed(inputs))
+        {
+            EnterPaused();
+            return;
+        }
 
         UpdateEffects(dt);
 
@@ -689,7 +711,6 @@ public sealed class BreakoutWorld
                     servePressed = !suppressed && inputs[owner].ServePressed;
                 }
 
-                bool wasCaught = i < _ballCaught.Count && _ballCaught[i];
                 bool isPrimary = owner < _primaryBallIndexByPlayer.Count && _primaryBallIndexByPlayer[owner] == i;
 
                 // Launch handling:
@@ -703,8 +724,9 @@ public sealed class BreakoutWorld
                 }
                 else if (isPrimary)
                 {
-                    // Primary ball: release launches when attached (serve OR caught); serve-press launches only for initial serve.
-                    launchRequested = catchReleased || (!wasCaught && servePressed);
+                    // Primary ball: do NOT auto-launch at start.
+                    // Only launch on explicit serve input or catch release.
+                    launchRequested = servePressed || catchReleased;
                 }
                 else
                 {
@@ -825,6 +847,77 @@ public sealed class BreakoutWorld
         }
     }
 
+    private static bool AnyPausePressed(DragonBreakInput[] inputs)
+    {
+        if (inputs == null) return false;
+        for (int i = 0; i < inputs.Length; i++)
+        {
+            // PausePressed is P/Start; MenuBackPressed covers Escape/Back
+            if (inputs[i].PausePressed || inputs[i].MenuBackPressed)
+                return true;
+        }
+
+        return false;
+    }
+
+    private void EnterPaused()
+    {
+        _pauseMenu.ResetSelection();
+        _mode = WorldMode.Paused;
+
+        // Prevent an immediate serve/catch release when resuming.
+        for (int p = 0; p < _launchSuppressedByPlayer.Count; p++)
+            _launchSuppressedByPlayer[p] = true;
+    }
+
+    private void ExitPausedToPlaying()
+    {
+        _mode = WorldMode.Playing;
+
+        // Same suppression when leaving other menus.
+        for (int p = 0; p < _launchSuppressedByPlayer.Count; p++)
+            _launchSuppressedByPlayer[p] = true;
+    }
+
+    private void UpdatePaused(DragonBreakInput[] inputs, Viewport vp, float dt)
+    {
+        // While paused, only tick toast so UI messages can fade.
+        if (_toastTimeLeft > 0f)
+        {
+            _toastTimeLeft -= dt;
+            if (_toastTimeLeft <= 0f)
+            {
+                _toastTimeLeft = 0f;
+                _toastText = string.Empty;
+            }
+        }
+
+        _pauseMenu.Update(inputs, vp, dt);
+
+        switch (_pauseMenu.ConsumeAction())
+        {
+            case PauseMenuScreen.PauseAction.Resume:
+                ExitPausedToPlaying();
+                break;
+
+            case PauseMenuScreen.PauseAction.RestartLevel:
+            {
+                var playfield = GetPlayfieldViewport(vp);
+                _powerUps.Clear();
+                ClearEffects();
+                LoadLevel(playfield, _levelIndex);
+                ResetBallOnPaddle();
+                ExitPausedToPlaying();
+                break;
+            }
+
+            case PauseMenuScreen.PauseAction.MainMenu:
+                _mode = WorldMode.Menu;
+                _menuItem = MenuItem.Start;
+                break;
+        }
+    }
+
     private void TrySpawnPowerUp(Rectangle brickBounds)
     {
         // Read chance from settings (configurable), falling back to defaults.
@@ -836,6 +929,10 @@ public sealed class BreakoutWorld
             return;
 
         double roll = _rng.NextDouble();
+
+        // Casual has infinite balls; extra lives are meaningless, so swap it for an instant reward.
+        bool casual = IsCasualNoLose;
+
         PowerUpType type = roll switch
         {
             < 0.24 => PowerUpType.ExpandPaddle,
@@ -843,610 +940,11 @@ public sealed class BreakoutWorld
             < 0.58 => PowerUpType.ScoreBoost,
             < 0.73 => PowerUpType.FastBall,
             < 0.88 => PowerUpType.MultiBall,
-            _ => PowerUpType.ExtraLife,
+            _ => casual ? PowerUpType.ScoreBurst : PowerUpType.ExtraLife,
         };
 
         var pos = new Vector2(brickBounds.Center.X, brickBounds.Center.Y);
         _powerUps.Add(new PowerUp(type, pos));
-    }
-
-    private string DifficultyLabel(int presetIndex)
-    {
-        presetIndex = Math.Clamp(presetIndex, 0, Presets.Length - 1);
-        // Title-case-ish for display.
-        return Presets[presetIndex].Name;
-    }
-
-    private string ContinueModeLabel(ContinueMode mode)
-        => mode switch
-        {
-            ContinueMode.Auto => "auto",
-            ContinueMode.Prompt => "prompt",
-            ContinueMode.PromptThenAuto => "prompt+auto",
-            _ => mode.ToString(),
-        };
-
-    private void OnLevelCleared(Viewport vp)
-    {
-        _levelIndex++;
-
-        // Decide interstitial behavior from settings.
-        var continueMode = _settings?.Current.Gameplay.ContinueMode ?? ContinueMode.PromptThenAuto;
-        var autoSecs = _settings?.Current.Gameplay.AutoContinueSeconds ?? 2.5f;
-
-        _levelInterstitialWasWin = true;
-        _levelInterstitialLine = LevelWinLines[_rng.Next(LevelWinLines.Length)];
-
-        if (continueMode == ContinueMode.Auto)
-        {
-            LoadLevel(vp, _levelIndex);
-            ResetBallOnPaddle();
-            return;
-        }
-
-        _interstitialTimeLeft = continueMode == ContinueMode.PromptThenAuto ? autoSecs : 0f;
-        _mode = WorldMode.LevelInterstitial;
-    }
-
-    private void OnBallLost(int ballIndex, Viewport vp)
-    {
-        if ((uint)ballIndex >= (uint)_balls.Count)
-            return;
-
-        var lost = _balls[ballIndex];
-
-        // Extra balls: remove without penalty.
-        if (lost.IsExtraBall)
-        {
-            _balls.RemoveAt(ballIndex);
-            _ballServing.RemoveAt(ballIndex);
-            FixPrimaryBallIndicesAfterRemoval(ballIndex);
-            return;
-        }
-
-        // Primary balls: in casual we never lose, just reset.
-        if (IsCasualNoLose)
-        {
-            _levelInterstitialWasWin = false;
-            _levelInterstitialLine = LevelFailLines[_rng.Next(LevelFailLines.Length)];
-            ResetBallOnPaddle(ballIndex);
-            return;
-        }
-
-        // Non-casual: decrement lives only if this is the owner's primary ball.
-        int owner = Math.Clamp(lost.OwnerPlayerIndex, 0, _activePlayerCount - 1);
-        bool isPrimaryForOwner = owner < _primaryBallIndexByPlayer.Count && _primaryBallIndexByPlayer[owner] == ballIndex;
-
-        if (isPrimaryForOwner)
-        {
-            if (owner >= 0 && owner < _livesByPlayer.Count)
-                _livesByPlayer[owner]--;
-        }
-
-        // If any player's lives drop to 0, that player is out; for now return to menu when all are out.
-        bool anyAlive = false;
-        for (int p = 0; p < _livesByPlayer.Count; p++)
-        {
-            if (_livesByPlayer[p] > 0)
-            {
-                anyAlive = true;
-                break;
-            }
-        }
-
-        if (!anyAlive)
-        {
-            _mode = WorldMode.Menu;
-            return;
-        }
-
-
-        ResetBallOnPaddle(ballIndex);
-    }
-
-    private void FixPrimaryBallIndicesAfterRemoval(int removedBallIndex)
-    {
-        for (int p = 0; p < _primaryBallIndexByPlayer.Count; p++)
-        {
-            int idx = _primaryBallIndexByPlayer[p];
-            if (idx == removedBallIndex)
-            {
-                // Primary ball should never be removed (we only remove extra balls),
-                // but recover safely anyway: clamp to 0.
-                _primaryBallIndexByPlayer[p] = Math.Clamp(idx, 0, Math.Max(0, _balls.Count - 1));
-            }
-            else if (idx > removedBallIndex)
-            {
-                _primaryBallIndexByPlayer[p] = idx - 1;
-            }
-        }
-    }
-
-    private void UpdateLevelInterstitial(DragonBreakInput[] inputs, Viewport vp, float dt)
-    {
-        bool confirmPressed = false;
-        bool backPressed = false;
-
-        if (inputs != null)
-        {
-            for (int i = 0; i < inputs.Length; i++)
-            {
-                confirmPressed |= inputs[i].MenuConfirmPressed || inputs[i].ServePressed;
-                backPressed |= inputs[i].MenuBackPressed;
-            }
-        }
-
-        var continueMode = _settings?.Current.Gameplay.ContinueMode ?? ContinueMode.PromptThenAuto;
-
-        if (continueMode == ContinueMode.PromptThenAuto && _interstitialTimeLeft > 0f)
-            _interstitialTimeLeft -= dt;
-
-        if (confirmPressed || (continueMode == ContinueMode.PromptThenAuto && _interstitialTimeLeft <= 0f))
-        {
-            LoadLevel(vp, _levelIndex);
-            ResetBallOnPaddle();
-            _mode = WorldMode.Playing;
-            return;
-        }
-
-        if (backPressed)
-        {
-            _mode = WorldMode.Menu;
-        }
-    }
-
-    private void UpdateMenu(DragonBreakInput[] inputs, Viewport vp, float dt)
-    {
-        bool confirmPressed = false, backPressed = false;
-
-        float menuX = 0f;
-        float menuY = 0f;
-
-        bool upHeldAny = false;
-        bool downHeldAny = false;
-        bool leftHeldAny = false;
-        bool rightHeldAny = false;
-
-        if (inputs != null)
-        {
-            for (int i = 0; i < inputs.Length; i++)
-            {
-                confirmPressed |= inputs[i].MenuConfirmPressed || inputs[i].ServePressed;
-                backPressed |= inputs[i].MenuBackPressed;
-
-                // Digital held (DPad/keys) should always work.
-                upHeldAny |= inputs[i].MenuUpHeld;
-                downHeldAny |= inputs[i].MenuDownHeld;
-                leftHeldAny |= inputs[i].MenuLeftHeld;
-                rightHeldAny |= inputs[i].MenuRightHeld;
-
-                // Also allow analog stick navigation.
-                if (Math.Abs(inputs[i].MenuMoveX) > Math.Abs(menuX)) menuX = inputs[i].MenuMoveX;
-                if (Math.Abs(inputs[i].MenuMoveY) > Math.Abs(menuY)) menuY = inputs[i].MenuMoveY;
-            }
-        }
-
-        bool upHeld = upHeldAny || menuY >= MenuAxisDeadzone;
-        bool downHeld = downHeldAny || menuY <= -MenuAxisDeadzone;
-        bool leftHeld = leftHeldAny || menuX <= -MenuAxisDeadzone;
-        bool rightHeld = rightHeldAny || menuX >= MenuAxisDeadzone;
-
-        // One item per stick "flick" or dpad/keyboard press.
-        if (upHeld && !_menuUpConsumed)
-        {
-            int count = Enum.GetValues<MenuItem>().Length;
-            _menuItem = (MenuItem)(((int)_menuItem - 1 + count) % count);
-            _menuUpConsumed = true;
-        }
-        if (!upHeld) _menuUpConsumed = false;
-
-        if (downHeld && !_menuDownConsumed)
-        {
-            int count = Enum.GetValues<MenuItem>().Length;
-            _menuItem = (MenuItem)(((int)_menuItem + 1) % count);
-            _menuDownConsumed = true;
-        }
-        if (!downHeld) _menuDownConsumed = false;
-
-        if (leftHeld && !_menuLeftConsumed)
-        {
-            AdjustMenuValue(-1);
-            _menuLeftConsumed = true;
-        }
-        if (!leftHeld) _menuLeftConsumed = false;
-
-        if (rightHeld && !_menuRightConsumed)
-        {
-            AdjustMenuValue(+1);
-            _menuRightConsumed = true;
-        }
-        if (!rightHeld) _menuRightConsumed = false;
-
-        if (confirmPressed)
-        {
-            if (_menuItem == MenuItem.Start)
-            {
-                _activePlayerCount = _selectedPlayers;
-
-                // Persist selected difficulty to settings so casual/no-lose rules apply.
-                _selectedPresetIndex = Math.Clamp(_selectedPresetIndex, 0, Presets.Length - 1);
-                _selectedDifficultyId = PresetIndexToDifficulty(_selectedPresetIndex);
-                _difficultyPaddleWidthMultiplier = GetDifficultyPaddleWidthMultiplier(_selectedDifficultyId);
-
-                if (_settings != null)
-                {
-                    var current = _settings.Current;
-                    _settings.UpdateCurrent(current with { Gameplay = current.Gameplay with { Difficulty = _selectedDifficultyId } }, save: true);
-                }
-
-                StartNewGame(vp, Presets[_selectedPresetIndex]);
-                _mode = WorldMode.Playing;
-            }
-            else if (_menuItem == MenuItem.Settings)
-            {
-                OpenSettings();
-            }
-            else
-            {
-                // Quick UX: confirming a non-start item jumps to Start.
-                _menuItem = MenuItem.Start;
-            }
-        }
-
-        if (backPressed)
-        {
-            _selectedPresetIndex = 3;
-            _selectedPlayers = 1;
-            _selectedGameMode = GameMode.Arcade;
-            _menuItem = MenuItem.Start;
-        }
-
-        // Open settings with Backspace (menuBack) while on menu.
-        // Uses an extra check so you can still reset with Back in the menu.
-        if (inputs != null)
-        {
-            for (int i = 0; i < inputs.Length; i++)
-            {
-                if (inputs[i].MenuBackPressed)
-                {
-                    OpenSettings();
-                    break;
-                }
-            }
-        }
-    }
-
-    private void OpenSettings()
-    {
-        if (_settings == null)
-            return;
-
-        _settings.BeginEdit();
-
-        // Sync resolution index from pending settings.
-        var pending = _settings.Pending ?? _settings.Current;
-        EnsureResolutionIndex(pending.Display.Width, pending.Display.Height);
-
-        _settingsItem = SettingsItem.WindowMode;
-        _mode = WorldMode.Settings;
-    }
-
-    private static int DifficultyToPresetIndex(DifficultyId id)
-        => id switch
-        {
-            DifficultyId.Casual => 0,
-            DifficultyId.VeryEasy => 1,
-            DifficultyId.Easy => 2,
-            DifficultyId.Normal => 3,
-            DifficultyId.Hard => 4,
-            DifficultyId.VeryHard => 5,
-            DifficultyId.Extreme => 6,
-            _ => 3,
-        };
-
-    private static DifficultyId PresetIndexToDifficulty(int presetIndex)
-        => presetIndex switch
-        {
-            0 => DifficultyId.Casual,
-            1 => DifficultyId.VeryEasy,
-            2 => DifficultyId.Easy,
-            3 => DifficultyId.Normal,
-            4 => DifficultyId.Hard,
-            5 => DifficultyId.VeryHard,
-            6 => DifficultyId.Extreme,
-            _ => DifficultyId.Normal,
-        };
-
-    private static float GetDifficultyPaddleWidthMultiplier(DifficultyId id)
-        => id switch
-        {
-            // Normal is the baseline ("3 units" wide).
-            DifficultyId.Normal => 1.00f,
-
-            // Easier difficulties: larger paddle.
-            DifficultyId.Casual => 1.5f,
-            DifficultyId.VeryEasy => 1.25f,
-            DifficultyId.Easy => 0.75f,
-
-            // Harder difficulties: smaller paddle.
-            DifficultyId.Hard => 0.5f,
-            DifficultyId.VeryHard => 0.40f,
-            DifficultyId.Extreme => 0.25f,
-
-            _ => 1.00f,
-        };
-
-    private void SyncSelectionsFromSettings()
-    {
-        if (_settings == null) return;
-
-        var s = _settings.Current;
-        _selectedDifficultyId = s.Gameplay.Difficulty;
-        _selectedPresetIndex = Math.Clamp(DifficultyToPresetIndex(_selectedDifficultyId), 0, Presets.Length - 1);
-        _preset = Presets[_selectedPresetIndex];
-        _difficultyPaddleWidthMultiplier = GetDifficultyPaddleWidthMultiplier(_selectedDifficultyId);
-    }
-
-    private void EnsureResolutionIndex(int w, int h)
-    {
-        _resolutionIndex = 0;
-        if (_resolutions.Count == 0)
-            return;
-
-        for (int i = 0; i < _resolutions.Count; i++)
-        {
-            if (_resolutions[i].Width == w && _resolutions[i].Height == h)
-            {
-                _resolutionIndex = i;
-                return;
-            }
-        }
-
-        // Pick the closest by area if exact match isn't found.
-        int targetArea = w * h;
-        int best = 0;
-        int bestDelta = int.MaxValue;
-        for (int i = 0; i < _resolutions.Count; i++)
-        {
-            int area = _resolutions[i].Width * _resolutions[i].Height;
-            int delta = Math.Abs(area - targetArea);
-            if (delta < bestDelta)
-            {
-                best = i;
-                bestDelta = delta;
-            }
-        }
-
-        _resolutionIndex = best;
-    }
-
-    private void UpdateSettingsMenu(DragonBreakInput[] inputs, Viewport vp, float dt)
-    {
-        if (_settings == null)
-        {
-            _mode = WorldMode.Menu;
-            return;
-        }
-
-        bool confirmPressed = false, backPressed = false;
-
-        float menuX = 0f;
-        float menuY = 0f;
-
-        bool upHeldAny = false;
-        bool downHeldAny = false;
-        bool leftHeldAny = false;
-        bool rightHeldAny = false;
-
-        if (inputs != null)
-        {
-            for (int i = 0; i < inputs.Length; i++)
-            {
-                confirmPressed |= inputs[i].MenuConfirmPressed || inputs[i].ServePressed;
-                backPressed |= inputs[i].MenuBackPressed;
-
-                upHeldAny |= inputs[i].MenuUpHeld;
-                downHeldAny |= inputs[i].MenuDownHeld;
-                leftHeldAny |= inputs[i].MenuLeftHeld;
-                rightHeldAny |= inputs[i].MenuRightHeld;
-
-                if (Math.Abs(inputs[i].MenuMoveX) > Math.Abs(menuX)) menuX = inputs[i].MenuMoveX;
-                if (Math.Abs(inputs[i].MenuMoveY) > Math.Abs(menuY)) menuY = inputs[i].MenuMoveY;
-            }
-        }
-
-        bool upHeld = upHeldAny || menuY >= MenuAxisDeadzone;
-        bool downHeld = downHeldAny || menuY <= -MenuAxisDeadzone;
-        bool leftHeld = leftHeldAny || menuX <= -MenuAxisDeadzone;
-        bool rightHeld = rightHeldAny || menuX >= MenuAxisDeadzone;
-
-        if (upHeld && !_menuUpConsumed)
-        {
-            int count = Enum.GetValues<SettingsItem>().Length;
-            _settingsItem = (SettingsItem)(((int)_settingsItem - 1 + count) % count);
-            _menuUpConsumed = true;
-        }
-        if (!upHeld) _menuUpConsumed = false;
-
-        if (downHeld && !_menuDownConsumed)
-        {
-            int count = Enum.GetValues<SettingsItem>().Length;
-            _settingsItem = (SettingsItem)(((int)_settingsItem + 1) % count);
-            _menuDownConsumed = true;
-        }
-        if (!downHeld) _menuDownConsumed = false;
-
-        if ((leftHeld && !_menuLeftConsumed) || (rightHeld && !_menuRightConsumed))
-        {
-            int dir = rightHeld ? +1 : -1;
-            AdjustSettingsValue(dir);
-            _menuLeftConsumed = leftHeld;
-            _menuRightConsumed = rightHeld;
-        }
-        if (!leftHeld) _menuLeftConsumed = false;
-        if (!rightHeld) _menuRightConsumed = false;
-
-        if (confirmPressed)
-        {
-            if (_settingsItem == SettingsItem.LevelSeedRandomize)
-            {
-                // Crypto-random seed for user-driven re-rolls.
-                var pending = _settings.Pending;
-                if (pending != null)
-                {
-                    int seed = RandomNumberGenerator.GetInt32(int.MinValue, int.MaxValue);
-                    var gameplay = pending.Gameplay with { LevelSeed = seed };
-                    _settings.SetPending(pending with { Gameplay = gameplay });
-                }
-            }
-            else if (_settingsItem == SettingsItem.LevelSeedReset)
-            {
-                var pending = _settings.Pending;
-                if (pending != null)
-                {
-                    var gameplay = pending.Gameplay with { LevelSeed = GameplaySettings.Default.LevelSeed };
-                    _settings.SetPending(pending with { Gameplay = gameplay });
-                }
-            }
-            else if (_settingsItem == SettingsItem.Apply)
-            {
-                _settings.ApplyPending();
-                SyncSelectionsFromSettings();
-                _mode = WorldMode.Menu;
-            }
-            else if (_settingsItem == SettingsItem.Cancel)
-            {
-                _settings.CancelEdit();
-                SyncSelectionsFromSettings();
-                _mode = WorldMode.Menu;
-            }
-        }
-
-        if (backPressed)
-        {
-            _settings.CancelEdit();
-            SyncSelectionsFromSettings();
-            _mode = WorldMode.Menu;
-        }
-    }
-
-    private void AdjustMenuValue(int dir)
-    {
-        if (dir == 0) return;
-
-        if (_menuItem == MenuItem.Players)
-        {
-            _selectedPlayers = Math.Clamp(_selectedPlayers + dir, 1, 4);
-        }
-        else if (_menuItem == MenuItem.Difficulty)
-        {
-            _selectedPresetIndex = Math.Clamp(_selectedPresetIndex + dir, 0, Presets.Length - 1);
-        }
-        else if (_menuItem == MenuItem.GameMode)
-        {
-            int gmCount = Enum.GetValues<GameMode>().Length;
-            _selectedGameMode = (GameMode)(((int)_selectedGameMode + dir + gmCount) % gmCount);
-        }
-    }
-
-    private void AdjustSettingsValue(int dir)
-    {
-        if (_settings?.Pending == null)
-            return;
-
-        if (dir == 0) return;
-
-        var pending = _settings.Pending;
-        var display = pending.Display;
-        var audio = pending.Audio;
-        var gameplay = pending.Gameplay;
-        var ui = pending.Ui;
-
-        const float volStep = 0.05f;
-
-        switch (_settingsItem)
-        {
-            case SettingsItem.WindowMode:
-            {
-                int count = Enum.GetValues<Settings.WindowMode>().Length;
-                int next = (((int)display.WindowMode + dir) % count + count) % count;
-                display = display with { WindowMode = (Settings.WindowMode)next };
-                break;
-            }
-            case SettingsItem.Resolution:
-            {
-                // Only editable when not borderless.
-                if (display.WindowMode == Settings.WindowMode.BorderlessFullscreen)
-                    break;
-
-                if (_resolutions.Count == 0)
-                    break;
-
-                _resolutionIndex = Math.Clamp(_resolutionIndex + dir, 0, _resolutions.Count - 1);
-                var r = _resolutions[_resolutionIndex];
-                display = display with { Width = r.Width, Height = r.Height };
-                break;
-            }
-            case SettingsItem.VSync:
-                if (dir != 0) display = display with { VSync = !display.VSync };
-                break;
-
-            case SettingsItem.MasterVolume:
-                audio = audio with { MasterVolume = audio.MasterVolume + dir * volStep };
-                break;
-            case SettingsItem.BgmVolume:
-                audio = audio with { BgmVolume = audio.BgmVolume + dir * volStep };
-                break;
-            case SettingsItem.SfxVolume:
-                audio = audio with { SfxVolume = audio.SfxVolume + dir * volStep };
-                break;
-
-            case SettingsItem.HudEnabled:
-                ui = ui with { ShowHud = !ui.ShowHud };
-                break;
-            case SettingsItem.HudScale:
-            {
-                float step = 0.10f;
-                ui = ui with { HudScale = ui.HudScale + dir * step };
-                break;
-            }
-            case SettingsItem.HudP1:
-                ui = ui with { ShowP1Hud = !ui.ShowP1Hud };
-                break;
-            case SettingsItem.HudP2:
-                ui = ui with { ShowP2Hud = !ui.ShowP2Hud };
-                break;
-            case SettingsItem.HudP3:
-                ui = ui with { ShowP3Hud = !ui.ShowP3Hud };
-                break;
-            case SettingsItem.HudP4:
-                ui = ui with { ShowP4Hud = !ui.ShowP4Hud };
-                break;
-
-            case SettingsItem.ContinueMode:
-            {
-                int count = Enum.GetValues<ContinueMode>().Length;
-                int next = (((int)gameplay.ContinueMode + dir) % count + count) % count;
-                gameplay = gameplay with { ContinueMode = (ContinueMode)next };
-                break;
-            }
-            case SettingsItem.AutoContinueSeconds:
-            {
-                float step = 0.5f;
-                gameplay = gameplay with { AutoContinueSeconds = gameplay.AutoContinueSeconds + dir * step };
-                break;
-            }
-
-            case SettingsItem.LevelSeed:
-            {
-                // Small step for fine tuning; hold right/left to move faster.
-                int step = 1;
-                gameplay = gameplay with { LevelSeed = gameplay.LevelSeed + dir * step };
-                break;
-            }
-        }
-
-        _settings.SetPending(pending with { Display = display, Audio = audio, Gameplay = gameplay, Ui = ui });
     }
 
     private void ApplyPowerUp(PowerUpType type)
@@ -1523,12 +1021,961 @@ public sealed class BreakoutWorld
                         _livesByPlayer[i]++;
                 }
                 break;
+
+            case PowerUpType.ScoreBurst:
+                // Instant score, scaled by current multiplier.
+                // Award goes to all active players so it feels good in co-op.
+                int basePoints = 250;
+                int pts = (int)MathF.Round(basePoints * _scoreMultiplier);
+                for (int i = 0; i < _scoreByPlayer.Count; i++)
+                    _scoreByPlayer[i] += pts;
+                break;
         }
+    }
+
+    private float GetEffectTimeLeft()
+    {
+        // Return the minimum active time left of any effect (paddle/ball speed, score multiplier).
+        // Used to decide if we should show the effects row in the HUD.
+        float min = float.MaxValue;
+
+        if (_paddleWidthTimeLeft > 0.01f)
+            min = Math.Min(min, _paddleWidthTimeLeft);
+
+        if (_ballSpeedTimeLeft > 0.01f)
+            min = Math.Min(min, _ballSpeedTimeLeft);
+
+        if (_scoreMultiplierTimeLeft > 0.01f)
+            min = Math.Min(min, _scoreMultiplierTimeLeft);
+
+        return min;
+    }
+
+    private void ShowToast(string text, float durationSeconds)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return;
+
+        _toastText = text;
+        _toastTimeLeft = Math.Max(_toastTimeLeft, durationSeconds);
+    }
+
+    private static string GetPowerUpToastText(PowerUpType type)
+        => type switch
+        {
+            PowerUpType.ExpandPaddle => "Paddle expanded",
+            PowerUpType.SlowBall => "Ball slowed",
+            PowerUpType.FastBall => "Ball sped up",
+            PowerUpType.ExtraLife => "+1 Life",
+            PowerUpType.ScoreBoost => "Score x2",
+            PowerUpType.MultiBall => "Multiball",
+            PowerUpType.ScoreBurst => "+Score",
+            _ => type.ToString(),
+        };
+
+    private void DrawCenteredText(SpriteBatch sb, Viewport vp, string text, float y, Color color)
+    {
+        if (_hudFont == null)
+            return;
+
+        var ui = _settings?.Current.Ui ?? UiSettings.Default;
+        float scale = ui.HudScale;
+
+        var s = SafeText(text);
+        var size = _hudFont.MeasureString(s) * scale;
+        float x = (vp.Width - size.X) * 0.5f;
+        sb.DrawString(_hudFont, s, new Vector2(Math.Max(12, x), y), color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+    }
+
+    private void DrawMenu(SpriteBatch sb, Viewport vp)
+    {
+        if (_hudFont == null)
+            return;
+
+        DrawCenteredText(sb, vp, "DRAGONBREAK", 70, Color.White);
+
+        float startY = 150;
+        float lineH = 34;
+
+        string sel(MenuItem item, string label, string value)
+        {
+            bool selected = _menuItem == item;
+            string prefix = selected ? ">" : " ";
+            // Keep per-line readable; align-ish with separator.
+            return $"{prefix} {label}: {value}";
+        }
+
+        var lines = new List<(string Text, Color Color)>
+        {
+            (sel(MenuItem.GameMode, "Mode", _selectedGameMode.ToString()), _menuItem == MenuItem.GameMode ? Color.White : new Color(210, 210, 220)),
+            (sel(MenuItem.Players, "Players", _selectedPlayers.ToString()), _menuItem == MenuItem.Players ? Color.White : new Color(210, 210, 220)),
+            (sel(MenuItem.Difficulty, "Difficulty", DifficultyLabel(_selectedPresetIndex)), _menuItem == MenuItem.Difficulty ? Color.White : new Color(210, 210, 220)),
+            (sel(MenuItem.Settings, "Settings", "Open"), _menuItem == MenuItem.Settings ? Color.White : new Color(210, 210, 220)),
+            (sel(MenuItem.Start, "Start", "Go"), _menuItem == MenuItem.Start ? Color.White : new Color(210, 210, 220)),
+        };
+
+        for (int i = 0; i < lines.Count; i++)
+        {
+            DrawCenteredText(sb, vp, lines[i].Text, startY + i * lineH, lines[i].Color);
+        }
+
+        DrawCenteredText(sb, vp, "Up/Down selects. Left/Right changes values. Confirm selects.", vp.Height - 90, new Color(180, 180, 190));
+        DrawCenteredText(sb, vp, "Back opens Settings. Esc exits.", vp.Height - 60, new Color(180, 180, 190));
+    }
+
+    private void DrawSettings(SpriteBatch sb, Viewport vp)
+    {
+        if (_hudFont == null)
+            return;
+
+        var pending = _settings?.Pending;
+        if (pending == null)
+        {
+            DrawCenteredText(sb, vp, "Settings unavailable", 120, Color.White);
+            return;
+        }
+
+        DrawCenteredText(sb, vp, "SETTINGS", 60, Color.White);
+
+        string sel(SettingsItem item, string label) => _settingsItem == item ? $"> {label}" : $"  {label}";
+
+        float startY = 120;
+        float lineH = 28;
+
+        var display = pending.Display;
+        var audio = pending.Audio;
+        var gameplay = pending.Gameplay;
+        var ui = pending.Ui;
+
+        var lines = new List<(SettingsItem Item, string Text)>
+        {
+            (SettingsItem.WindowMode, sel(SettingsItem.WindowMode, $"Window Mode: {display.WindowMode}")),
+            (SettingsItem.Resolution, sel(SettingsItem.Resolution, $"Resolution: {display.Width}x{display.Height}")),
+            (SettingsItem.VSync, sel(SettingsItem.VSync, $"VSync: {(display.VSync ? "On" : "Off")}")),
+
+            (SettingsItem.MasterVolume, sel(SettingsItem.MasterVolume, $"Master Volume: {(int)(audio.MasterVolume * 100)}%")),
+            (SettingsItem.BgmVolume, sel(SettingsItem.BgmVolume, $"BGM Volume: {(int)(audio.BgmVolume * 100)}%")),
+            (SettingsItem.SfxVolume, sel(SettingsItem.SfxVolume, $"SFX Volume: {(int)(audio.SfxVolume * 100)}%")),
+
+            (SettingsItem.HudEnabled, sel(SettingsItem.HudEnabled, $"HUD: {(ui.ShowHud ? "On" : "Off")}")),
+            (SettingsItem.HudScale, sel(SettingsItem.HudScale, $"HUD Scale: {ui.HudScale:0.00}x")),
+            (SettingsItem.HudP1, sel(SettingsItem.HudP1, $"Show P1 HUD: {(ui.ShowP1Hud ? "On" : "Off")}")),
+            (SettingsItem.HudP2, sel(SettingsItem.HudP2, $"Show P2 HUD: {(ui.ShowP2Hud ? "On" : "Off")}")),
+            (SettingsItem.HudP3, sel(SettingsItem.HudP3, $"Show P3 HUD: {(ui.ShowP3Hud ? "On" : "Off")}")),
+            (SettingsItem.HudP4, sel(SettingsItem.HudP4, $"Show P4 HUD: {(ui.ShowP4Hud ? "On" : "Off")}")),
+
+            (SettingsItem.ContinueMode, sel(SettingsItem.ContinueMode, $"Continue Mode: {ContinueModeLabel(gameplay.ContinueMode)}")),
+            (SettingsItem.AutoContinueSeconds, sel(SettingsItem.AutoContinueSeconds, $"Auto Continue: {gameplay.AutoContinueSeconds:0.0}s")),
+
+            (SettingsItem.LevelSeed, sel(SettingsItem.LevelSeed, $"Level Seed: {gameplay.LevelSeed}")),
+            (SettingsItem.LevelSeedRandomize, sel(SettingsItem.LevelSeedRandomize, "Seed: Randomize")),
+            (SettingsItem.LevelSeedReset, sel(SettingsItem.LevelSeedReset, "Seed: Reset (1337)")),
+
+            (SettingsItem.Apply, sel(SettingsItem.Apply, "APPLY")),
+            (SettingsItem.Cancel, sel(SettingsItem.Cancel, "CANCEL")),
+        };
+
+        for (int i = 0; i < lines.Count; i++)
+        {
+            Color c = _settingsItem == lines[i].Item ? Color.White : new Color(210, 210, 220);
+            DrawCenteredText(sb, vp, lines[i].Text, startY + i * lineH, c);
+        }
+
+        DrawCenteredText(sb, vp, "Up/Down select. Left/Right change. Confirm = activate. Back = cancel.", vp.Height - 60, new Color(180, 180, 190));
+    }
+
+    private void DrawHud(SpriteBatch sb, Viewport vp)
+    {
+        if (_hudFont == null)
+            return;
+
+        var ui = _settings?.Current.Ui ?? UiSettings.Default;
+        if (!ui.ShowHud)
+            return;
+
+        float scale = ui.HudScale;
+
+        // Hard UI bar at the top that is NOT part of the playfield.
+        // This replaces the old translucent overlay behavior.
+        int hudBarH = GetHudBarHeight(vp);
+        if (hudBarH > 0)
+            sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, hudBarH), Color.Black);
+
+        // Keep HUD text inside the bar.
+        float topPadding = 8f;
+        float lineY1 = topPadding;
+        float lineY2 = topPadding + (_hudFont.LineSpacing * scale);
+        float lineY3 = topPadding + (_hudFont.LineSpacing * scale) * 2f;
+
+        // Level + difficulty + mode title in top center.
+        string diff = DifficultyLabel(_selectedPresetIndex);
+        string top = $"LEVEL {_levelIndex + 1}   DIFF {diff}   MODE {_selectedGameMode}";
+        var topSafe = SafeText(top);
+        var topSize = _hudFont.MeasureString(topSafe) * scale;
+        sb.DrawString(_hudFont, topSafe, new Vector2((vp.Width - topSize.X) * 0.5f, lineY1), Color.White, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+
+        void DrawPlayerPanel(int player, Vector2 anchor, bool rightAlign)
+        {
+            if (player < 0 || player >= _activePlayerCount)
+                return;
+            bool show = player switch
+            {
+                0 => ui.ShowP1Hud,
+                1 => ui.ShowP2Hud,
+                2 => ui.ShowP3Hud,
+                3 => ui.ShowP4Hud,
+                _ => true,
+            };
+
+            if (!show) return;
+
+            int score = player < _scoreByPlayer.Count ? _scoreByPlayer[player] : 0;
+            string balls = IsCasualNoLose ? "∞" : (player < _livesByPlayer.Count ? _livesByPlayer[player].ToString() : "0");
+
+            string text = $"P{player + 1}  SCORE {score}  BALLS {balls}";
+            string safe = SafeText(text);
+            var size = _hudFont.MeasureString(safe) * scale;
+
+            Vector2 pos = rightAlign
+                ? new Vector2(anchor.X - size.X, anchor.Y)
+                : anchor;
+
+            var color = PlayerBaseColors[Math.Clamp(player, 0, PlayerBaseColors.Length - 1)];
+            sb.DrawString(_hudFont, safe, pos, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+        }
+
+        // Put all player panels in the top bar.
+        DrawPlayerPanel(0, new Vector2(12, lineY2), rightAlign: false);
+        DrawPlayerPanel(1, new Vector2(vp.Width - 12, lineY2), rightAlign: true);
+
+        // If 3–4 players, place them on the third line inside the bar.
+        DrawPlayerPanel(2, new Vector2(12, lineY3), rightAlign: false);
+        DrawPlayerPanel(3, new Vector2(vp.Width - 12, lineY3), rightAlign: true);
+
+        // Interstitial prompt line: keep it in the HUD bar if possible; otherwise fall back to bottom.
+        if (_mode == WorldMode.LevelInterstitial)
+        {
+            string prompt = (_settings?.Current.Gameplay.ContinueMode ?? ContinueMode.PromptThenAuto) == ContinueMode.Prompt
+                ? "Continue or nah? (Confirm)"
+                : "Continue or nah? (Confirm)  |  auto...";
+
+            string line = $"{prompt}   {_levelInterstitialLine}";
+            string safeLine = SafeText(line);
+
+            float y = lineY3 + (_hudFont.LineSpacing * scale);
+            bool fitsTop = y + (_hudFont.LineSpacing * scale) <= hudBarH;
+
+            if (fitsTop)
+            {
+                sb.DrawString(_hudFont, safeLine, new Vector2(12, y), _levelInterstitialWasWin ? new Color(120, 235, 120) : new Color(255, 120, 80), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            }
+            else
+            {
+                sb.DrawString(_hudFont, safeLine, new Vector2(12, vp.Height - (12 + _hudFont.LineSpacing * scale)), _levelInterstitialWasWin ? new Color(120, 235, 120) : new Color(255, 120, 80), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            }
+        }
+
+        // Active effect timers (only show while playing/paused).
+        if (_mode == WorldMode.Playing || _mode == WorldMode.Paused)
+        {
+            var effects = new List<string>(3);
+
+            if (_paddleWidthTimeLeft > 0.01f)
+                effects.Add($"WIDE {_paddleWidthTimeLeft:0.0}s");
+
+            if (_ballSpeedTimeLeft > 0.01f)
+            {
+                string label = _ballSpeedMultiplier >= 1.01f ? "FAST" : "SLOW";
+                effects.Add($"{label} {_ballSpeedTimeLeft:0.0}s");
+            }
+
+            if (_scoreMultiplierTimeLeft > 0.01f)
+                effects.Add($"x{_scoreMultiplier:0.#} {_scoreMultiplierTimeLeft:0.0}s");
+
+            if (effects.Count > 0)
+            {
+                string text = string.Join("  |  ", effects);
+                string safe = SafeText(text);
+
+                var size = _hudFont.MeasureString(safe) * scale;
+                sb.DrawString(_hudFont, safe, new Vector2(vp.Width - 12 - size.X, lineY1), new Color(210, 210, 220), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            }
+        }
+    }
+
+    public void Draw(SpriteBatch sb, Viewport vp)
+    {
+        // Background
+        sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, vp.Height), new Color(16, 16, 20));
+
+        // Only draw the gameplay canvas while actually in-game.
+        // This prevents stale gameplay visuals showing behind the Menu/Settings/Interstitial screens.
+        if (_mode != WorldMode.Playing && _mode != WorldMode.Paused)
+            return;
+
+        // Translate gameplay drawing down so (0,0) in game space maps to the top of the PLAYFIELD,
+        // not the top of the window (which is reserved for the HUD bar).
+        int hudH = GetHudBarHeight(vp);
+
+        // Bricks
+        for (int i = 0; i < _bricks.Count; i++)
+        {
+            var b = _bricks[i];
+            if (!b.IsAlive) continue;
+
+            Color c = Color.White;
+            try
+            {
+                if (b.Palette != null && b.Palette.Length > 0)
+                {
+                    int hpIndex = Math.Clamp(b.HitPoints - 1, 0, b.Palette.Length - 1);
+                    c = b.Palette[hpIndex];
+                }
+            }
+            catch
+            {
+                c = Color.White;
+            }
+
+            var r = b.Bounds;
+            r.Y += hudH;
+            sb.Draw(_pixel, r, c);
+        }
+
+        // Paddles
+        for (int i = 0; i < _paddles.Count; i++)
+        {
+            var r = _paddles[i].Bounds;
+            r.Y += hudH;
+            sb.Draw(_pixel, r, PlayerBaseColors[Math.Clamp(i, 0, PlayerBaseColors.Length - 1)]);
+        }
+
+        // Balls
+        for (int i = 0; i < _balls.Count; i++)
+        {
+            var ball = _balls[i];
+            var r = ball.Bounds;
+            r.Y += hudH;
+
+            var c = ball.DrawColor ?? (ball.IsExtraBall ? Color.White : PlayerBaseColors[Math.Clamp(ball.OwnerPlayerIndex, 0, PlayerBaseColors.Length - 1)]);
+            sb.Draw(_pixel, r, c);
+        }
+
+        // PowerUps
+        for (int i = 0; i < _powerUps.Count; i++)
+        {
+            var r = _powerUps[i].Bounds;
+            r.Y += hudH;
+            sb.Draw(_pixel, r, Color.Gold);
+        }
+    }
+
+    /// <summary>
+    /// Draws screen-space UI (menus/settings/HUD/top bar). Call this WITHOUT scissor.
+    /// </summary>
+    public void DrawUi(SpriteBatch sb, Viewport vp)
+    {
+        // For now, if we're in menu/settings we only show those screens.
+        if (_mode == WorldMode.Menu)
+        {
+            DrawMenu(sb, vp);
+            return;
+        }
+
+        if (_mode == WorldMode.Settings)
+        {
+            DrawSettings(sb, vp);
+            return;
+        }
+
+        // In-game HUD + top bar.
+        DrawHud(sb, vp);
+
+        if (_mode == WorldMode.Paused)
+        {
+            DrawPauseOverlay(sb, vp);
+        }
+
+        // Toast (screen-space) anchored to playfield bottom-right.
+        if (_hudFont != null && _toastTimeLeft > 0f && !string.IsNullOrWhiteSpace(_toastText))
+        {
+            var playfield = GetPlayfieldViewport(vp);
+
+            var ui = _settings?.Current.Ui ?? UiSettings.Default;
+            float scale = MathHelper.Clamp(ui.HudScale, 0.5f, 2.5f);
+
+            Vector2 size = _hudFont.MeasureString(_toastText) * scale;
+
+            const float margin = 12f;
+            float x = playfield.X + playfield.Width - margin - size.X;
+            float y = playfield.Y + playfield.Height - margin - size.Y;
+
+            float a = MathHelper.Clamp(_toastTimeLeft / ToastDurationSeconds, 0f, 1f);
+            var col = Color.White * a;
+            var shadow = Color.Black * (0.65f * a);
+
+            sb.DrawString(_hudFont, _toastText, new Vector2(x + 1, y + 1), shadow, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+            sb.DrawString(_hudFont, _toastText, new Vector2(x, y), col, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
+        }
+    }
+
+    private void DrawPauseOverlay(SpriteBatch sb, Viewport vp)
+    {
+        if (_hudFont == null)
+            return;
+
+        // Darken screen a bit
+        sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, vp.Height), Color.Black * 0.55f);
+
+        DrawCenteredText(sb, vp, "PAUSED", 120, Color.White);
+
+        float y = 185;
+        float lineH = 34;
+        foreach (var (label, selected) in _pauseMenu.GetLines())
+        {
+            string prefix = selected ? ">" : " ";
+            DrawCenteredText(sb, vp, $"{prefix} {label}", y, selected ? Color.White : new Color(210, 210, 220));
+            y += lineH;
+        }
+
+        DrawCenteredText(sb, vp, "Confirm selects. Back resumes.", vp.Height - 60, new Color(180, 180, 190));
+    }
+
+    // --- Missing methods reintroduced (Update/Draw dependencies) ---
+
+    private string DifficultyLabel(int presetIndex)
+    {
+        presetIndex = Math.Clamp(presetIndex, 0, Presets.Length - 1);
+        return Presets[presetIndex].Name;
+    }
+
+    private string ContinueModeLabel(ContinueMode mode)
+        => mode switch
+        {
+            ContinueMode.Auto => "auto",
+            ContinueMode.Prompt => "prompt",
+            ContinueMode.PromptThenAuto => "prompt+auto",
+            _ => mode.ToString(),
+        };
+
+    private static int DifficultyToPresetIndex(DifficultyId id)
+        => id switch
+        {
+            DifficultyId.Casual => 0,
+            DifficultyId.VeryEasy => 1,
+            DifficultyId.Easy => 2,
+            DifficultyId.Normal => 3,
+            DifficultyId.Hard => 4,
+            DifficultyId.VeryHard => 5,
+            DifficultyId.Extreme => 6,
+            _ => 3,
+        };
+
+    private static DifficultyId PresetIndexToDifficulty(int presetIndex)
+        => presetIndex switch
+        {
+            0 => DifficultyId.Casual,
+            1 => DifficultyId.VeryEasy,
+            2 => DifficultyId.Easy,
+            3 => DifficultyId.Normal,
+            4 => DifficultyId.Hard,
+            5 => DifficultyId.VeryHard,
+            6 => DifficultyId.Extreme,
+            _ => DifficultyId.Normal,
+        };
+
+    private static float GetDifficultyPaddleWidthMultiplier(DifficultyId id)
+        => id switch
+        {
+            DifficultyId.Normal => 1.00f,
+            DifficultyId.Casual => 1.5f,
+            DifficultyId.VeryEasy => 1.25f,
+            DifficultyId.Easy => 0.75f,
+            DifficultyId.Hard => 0.5f,
+            DifficultyId.VeryHard => 0.40f,
+            DifficultyId.Extreme => 0.25f,
+            _ => 1.00f,
+        };
+
+    private void SyncSelectionsFromSettings()
+    {
+        if (_settings == null) return;
+
+        var s = _settings.Current;
+        _selectedDifficultyId = s.Gameplay.Difficulty;
+        _selectedPresetIndex = Math.Clamp(DifficultyToPresetIndex(_selectedDifficultyId), 0, Presets.Length - 1);
+        _preset = Presets[_selectedPresetIndex];
+        _difficultyPaddleWidthMultiplier = GetDifficultyPaddleWidthMultiplier(_selectedDifficultyId);
+    }
+
+    private void UpdateMenu(DragonBreakInput[] inputs, Viewport vp, float dt)
+    {
+        bool confirmPressed = false, backPressed = false;
+
+        float menuX = 0f;
+        float menuY = 0f;
+
+        bool upHeldAny = false;
+        bool downHeldAny = false;
+        bool leftHeldAny = false;
+        bool rightHeldAny = false;
+
+        if (inputs != null)
+        {
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                confirmPressed |= inputs[i].MenuConfirmPressed || inputs[i].ServePressed;
+                backPressed |= inputs[i].MenuBackPressed;
+
+                upHeldAny |= inputs[i].MenuUpHeld;
+                downHeldAny |= inputs[i].MenuDownHeld;
+                leftHeldAny |= inputs[i].MenuLeftHeld;
+                rightHeldAny |= inputs[i].MenuRightHeld;
+
+                if (Math.Abs(inputs[i].MenuMoveX) > Math.Abs(menuX)) menuX = inputs[i].MenuMoveX;
+                if (Math.Abs(inputs[i].MenuMoveY) > Math.Abs(menuY)) menuY = inputs[i].MenuMoveY;
+            }
+        }
+
+        bool upHeld = upHeldAny || menuY >= MenuAxisDeadzone;
+        bool downHeld = downHeldAny || menuY <= -MenuAxisDeadzone;
+        bool leftHeld = leftHeldAny || menuX <= -MenuAxisDeadzone;
+        bool rightHeld = rightHeldAny || menuX >= MenuAxisDeadzone;
+
+        if (upHeld && !_menuUpConsumed)
+        {
+            int count = Enum.GetValues<MenuItem>().Length;
+            _menuItem = (MenuItem)(((int)_menuItem - 1 + count) % count);
+            _menuUpConsumed = true;
+        }
+        if (!upHeld) _menuUpConsumed = false;
+
+        if (downHeld && !_menuDownConsumed)
+        {
+            int count = Enum.GetValues<MenuItem>().Length;
+            _menuItem = (MenuItem)(((int)_menuItem + 1) % count);
+            _menuDownConsumed = true;
+        }
+        if (!downHeld) _menuDownConsumed = false;
+
+        if (leftHeld && !_menuLeftConsumed)
+        {
+            AdjustMenuValue(-1);
+            _menuLeftConsumed = true;
+        }
+        if (!leftHeld) _menuLeftConsumed = false;
+
+        if (rightHeld && !_menuRightConsumed)
+        {
+            AdjustMenuValue(+1);
+            _menuRightConsumed = true;
+        }
+        if (!rightHeld) _menuRightConsumed = false;
+
+        if (confirmPressed)
+        {
+            if (_menuItem == MenuItem.Start)
+            {
+                _activePlayerCount = _selectedPlayers;
+
+                _selectedPresetIndex = Math.Clamp(_selectedPresetIndex, 0, Presets.Length - 1);
+                _selectedDifficultyId = PresetIndexToDifficulty(_selectedPresetIndex);
+                _difficultyPaddleWidthMultiplier = GetDifficultyPaddleWidthMultiplier(_selectedDifficultyId);
+
+                if (_settings != null)
+                {
+                    var current = _settings.Current;
+                    _settings.UpdateCurrent(current with { Gameplay = current.Gameplay with { Difficulty = _selectedDifficultyId } }, save: true);
+                }
+
+                StartNewGame(vp, Presets[_selectedPresetIndex]);
+                _mode = WorldMode.Playing;
+            }
+            else if (_menuItem == MenuItem.Settings)
+            {
+                OpenSettings();
+            }
+            else
+            {
+                _menuItem = MenuItem.Start;
+            }
+        }
+
+        if (backPressed)
+        {
+            _selectedPresetIndex = 3;
+            _selectedPlayers = 1;
+            _selectedGameMode = GameMode.Arcade;
+            _menuItem = MenuItem.Start;
+        }
+
+        if (inputs != null)
+        {
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                if (inputs[i].MenuBackPressed)
+                {
+                    OpenSettings();
+                    break;
+                }
+            }
+        }
+    }
+
+    private void AdjustMenuValue(int dir)
+    {
+        switch (_menuItem)
+        {
+            case MenuItem.GameMode:
+            {
+                int count = Enum.GetValues<GameMode>().Length;
+                _selectedGameMode = (GameMode)((((int)_selectedGameMode + dir) % count + count) % count);
+                break;
+            }
+            case MenuItem.Players:
+                _selectedPlayers = Math.Clamp(_selectedPlayers + dir, 1, 4);
+                break;
+            case MenuItem.Difficulty:
+                _selectedPresetIndex = Math.Clamp(_selectedPresetIndex + dir, 0, Presets.Length - 1);
+                break;
+        }
+    }
+
+    private void OpenSettings()
+    {
+        if (_settings == null)
+            return;
+
+        _settings.BeginEdit();
+
+        var pending = _settings.Pending ?? _settings.Current;
+        EnsureResolutionIndex(pending.Display.Width, pending.Display.Height);
+
+        _settingsItem = SettingsItem.WindowMode;
+        _mode = WorldMode.Settings;
+    }
+
+    private void EnsureResolutionIndex(int w, int h)
+    {
+        if (_resolutions == null || _resolutions.Count == 0)
+        {
+            _resolutionIndex = 0;
+            return;
+        }
+
+        int best = 0;
+        int bestScore = int.MaxValue;
+        for (int i = 0; i < _resolutions.Count; i++)
+        {
+            int dx = _resolutions[i].Width - w;
+            int dy = _resolutions[i].Height - h;
+            int score = dx * dx + dy * dy;
+            if (score < bestScore)
+            {
+                bestScore = score;
+                best = i;
+            }
+        }
+
+        _resolutionIndex = best;
+    }
+
+    private void UpdateSettingsMenu(DragonBreakInput[] inputs, Viewport vp, float dt)
+    {
+        if (_settings == null || _settings.Pending == null)
+        {
+            _mode = WorldMode.Menu;
+            return;
+        }
+
+        bool confirmPressed = false;
+        bool backPressed = false;
+        bool upPressed = false;
+        bool downPressed = false;
+        bool leftHeld = false;
+        bool rightHeld = false;
+
+        if (inputs != null)
+        {
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                confirmPressed |= inputs[i].MenuConfirmPressed || inputs[i].ServePressed;
+                backPressed |= inputs[i].MenuBackPressed;
+                upPressed |= inputs[i].MenuUpPressed;
+                downPressed |= inputs[i].MenuDownPressed;
+                leftHeld |= inputs[i].MenuLeftHeld;
+                rightHeld |= inputs[i].MenuRightHeld;
+            }
+        }
+
+        if (upPressed)
+        {
+            int count = Enum.GetValues<SettingsItem>().Length;
+            _settingsItem = (SettingsItem)(((int)_settingsItem - 1 + count) % count);
+        }
+
+        if (downPressed)
+        {
+            int count = Enum.GetValues<SettingsItem>().Length;
+            _settingsItem = (SettingsItem)(((int)_settingsItem + 1) % count);
+        }
+
+        int dir = 0;
+
+        // Debounce: treat held left/right as single 'click' events.
+        if (leftHeld && !_settingsLeftConsumed)
+        {
+            dir -= 1;
+            _settingsLeftConsumed = true;
+        }
+        if (!leftHeld)
+            _settingsLeftConsumed = false;
+
+        if (rightHeld && !_settingsRightConsumed)
+        {
+            dir += 1;
+            _settingsRightConsumed = true;
+        }
+        if (!rightHeld)
+            _settingsRightConsumed = false;
+
+        if (dir != 0)
+            AdjustSettingsValue(dir);
+
+        if (confirmPressed)
+        {
+            if (_settingsItem == SettingsItem.Apply)
+            {
+                _settings.ApplyPending();
+                SyncSelectionsFromSettings();
+                _mode = WorldMode.Menu;
+                return;
+            }
+
+            if (_settingsItem == SettingsItem.Cancel)
+            {
+                _settings.CancelEdit();
+                _mode = WorldMode.Menu;
+                return;
+            }
+
+            // toggle items
+            var pending = _settings.Pending;
+            if (pending != null)
+            {
+                var display = pending.Display;
+                var audio = pending.Audio;
+                var gameplay = pending.Gameplay;
+                var ui = pending.Ui;
+
+                switch (_settingsItem)
+                {
+                    case SettingsItem.VSync:
+                        display = display with { VSync = !display.VSync };
+                        break;
+                    case SettingsItem.HudEnabled:
+                        ui = ui with { ShowHud = !ui.ShowHud };
+                        break;
+                    case SettingsItem.HudP1:
+                        ui = ui with { ShowP1Hud = !ui.ShowP1Hud };
+                        break;
+                    case SettingsItem.HudP2:
+                        ui = ui with { ShowP2Hud = !ui.ShowP2Hud };
+                        break;
+                    case SettingsItem.HudP3:
+                        ui = ui with { ShowP3Hud = !ui.ShowP3Hud };
+                        break;
+                    case SettingsItem.HudP4:
+                        ui = ui with { ShowP4Hud = !ui.ShowP4Hud };
+                        break;
+                    case SettingsItem.LevelSeedRandomize:
+                        gameplay = gameplay with { LevelSeed = Random.Shared.Next(1, int.MaxValue) };
+                        break;
+                    case SettingsItem.LevelSeedReset:
+                        gameplay = gameplay with { LevelSeed = 1337 };
+                        break;
+                }
+
+                _settings.SetPending(pending with { Display = display, Audio = audio, Gameplay = gameplay, Ui = ui });
+            }
+        }
+
+        if (backPressed)
+        {
+            _settings.CancelEdit();
+            _mode = WorldMode.Menu;
+        }
+    }
+
+    private void AdjustSettingsValue(int dir)
+    {
+        var pending = _settings?.Pending;
+        if (pending == null) return;
+
+        var display = pending.Display;
+        var audio = pending.Audio;
+        var gameplay = pending.Gameplay;
+        var ui = pending.Ui;
+
+        switch (_settingsItem)
+        {
+            case SettingsItem.WindowMode:
+            {
+                int count = Enum.GetValues<WindowMode>().Length;
+                int next = (((int)display.WindowMode + dir) % count + count) % count;
+                display = display with { WindowMode = (WindowMode)next };
+                break;
+            }
+            case SettingsItem.Resolution:
+            {
+                if (_resolutions.Count > 0)
+                {
+                    _resolutionIndex = (((_resolutionIndex + dir) % _resolutions.Count) + _resolutions.Count) % _resolutions.Count;
+                    display = display with { Width = _resolutions[_resolutionIndex].Width, Height = _resolutions[_resolutionIndex].Height };
+                }
+                break;
+            }
+            case SettingsItem.MasterVolume:
+                audio = audio with { MasterVolume = MathHelper.Clamp(audio.MasterVolume + dir * 0.05f, 0f, 1f) };
+                break;
+            case SettingsItem.BgmVolume:
+                audio = audio with { BgmVolume = MathHelper.Clamp(audio.BgmVolume + dir * 0.05f, 0f, 1f) };
+                break;
+            case SettingsItem.SfxVolume:
+                audio = audio with { SfxVolume = MathHelper.Clamp(audio.SfxVolume + dir * 0.05f, 0f, 1f) };
+                break;
+
+            case SettingsItem.HudScale:
+                ui = ui with { HudScale = Math.Clamp(ui.HudScale + dir * 0.05f, 0.5f, 2.5f) };
+                break;
+
+            case SettingsItem.ContinueMode:
+            {
+                int count = Enum.GetValues<ContinueMode>().Length;
+                int next = (((int)gameplay.ContinueMode + dir) % count + count) % count;
+                gameplay = gameplay with { ContinueMode = (ContinueMode)next };
+                break;
+            }
+            case SettingsItem.AutoContinueSeconds:
+                gameplay = gameplay with { AutoContinueSeconds = Math.Max(0f, gameplay.AutoContinueSeconds + dir * 0.5f) };
+                break;
+
+            case SettingsItem.LevelSeed:
+                gameplay = gameplay with { LevelSeed = gameplay.LevelSeed + dir };
+                break;
+        }
+
+        _settings?.SetPending(pending with { Display = display, Audio = audio, Gameplay = gameplay, Ui = ui });
+    }
+
+    private void UpdateLevelInterstitial(DragonBreakInput[] inputs, Viewport vp, float dt)
+    {
+        bool confirmPressed = false;
+        bool backPressed = false;
+
+        if (inputs != null)
+        {
+            for (int i = 0; i < inputs.Length; i++)
+            {
+                confirmPressed |= inputs[i].MenuConfirmPressed || inputs[i].ServePressed;
+                backPressed |= inputs[i].MenuBackPressed;
+            }
+        }
+
+        var continueMode = _settings?.Current.Gameplay.ContinueMode ?? ContinueMode.PromptThenAuto;
+
+        if (continueMode == ContinueMode.PromptThenAuto && _interstitialTimeLeft > 0f)
+            _interstitialTimeLeft -= dt;
+
+        if (confirmPressed || (continueMode == ContinueMode.PromptThenAuto && _interstitialTimeLeft <= 0f))
+        {
+            var playfield = GetPlayfieldViewport(vp);
+            LoadLevel(playfield, _levelIndex);
+            ResetBallOnPaddle();
+            _mode = WorldMode.Playing;
+            return;
+        }
+
+        if (backPressed)
+        {
+            _mode = WorldMode.Menu;
+        }
+    }
+
+    private void OnLevelCleared(Viewport vp)
+    {
+        _levelIndex++;
+
+        var continueMode = _settings?.Current.Gameplay.ContinueMode ?? ContinueMode.PromptThenAuto;
+        var autoSecs = _settings?.Current.Gameplay.AutoContinueSeconds ?? 2.5f;
+
+        _levelInterstitialWasWin = true;
+        _levelInterstitialLine = LevelWinLines[_rng.Next(LevelWinLines.Length)];
+
+        if (continueMode == ContinueMode.Auto)
+        {
+            var playfield = GetPlayfieldViewport(vp);
+            LoadLevel(playfield, _levelIndex);
+            ResetBallOnPaddle();
+            return;
+        }
+
+        _interstitialTimeLeft = continueMode == ContinueMode.PromptThenAuto ? autoSecs : 0f;
+        _mode = WorldMode.LevelInterstitial;
+    }
+
+    private void OnBallLost(int ballIndex, Viewport vp)
+    {
+        if ((uint)ballIndex >= (uint)_balls.Count)
+            return;
+
+        var lost = _balls[ballIndex];
+
+        if (lost.IsExtraBall)
+        {
+            _balls.RemoveAt(ballIndex);
+            _ballServing.RemoveAt(ballIndex);
+            return;
+        }
+
+        if (IsCasualNoLose)
+        {
+            _levelInterstitialWasWin = false;
+            _levelInterstitialLine = LevelFailLines[_rng.Next(LevelFailLines.Length)];
+            ResetBallOnPaddle(ballIndex);
+            return;
+        }
+
+        int owner = Math.Clamp(lost.OwnerPlayerIndex, 0, _activePlayerCount - 1);
+        bool isPrimaryForOwner = owner < _primaryBallIndexByPlayer.Count && _primaryBallIndexByPlayer[owner] == ballIndex;
+
+        if (isPrimaryForOwner)
+        {
+            if (owner >= 0 && owner < _livesByPlayer.Count)
+                _livesByPlayer[owner]--;
+        }
+
+        bool anyAlive = false;
+        for (int p = 0; p < _livesByPlayer.Count; p++)
+        {
+            if (_livesByPlayer[p] > 0)
+            {
+                anyAlive = true;
+                break;
+            }
+        }
+
+        if (!anyAlive)
+        {
+            _mode = WorldMode.Menu;
+            return;
+        }
+
+        ResetBallOnPaddle(ballIndex);
     }
 
     private void UpdateEffects(float dt)
     {
-        // Toast timer first (so it updates everywhere gameplay updates)
         if (_toastTimeLeft > 0f)
         {
             _toastTimeLeft -= dt;
@@ -1557,7 +2004,6 @@ public sealed class BreakoutWorld
                 _ballSpeedTimeLeft = 0f;
                 _ballSpeedMultiplier = 1f;
 
-                // Re-normalize to a sensible speed after effect ends.
                 foreach (var ball in _balls)
                 {
                     if (ball.Velocity != Vector2.Zero)
@@ -1579,8 +2025,6 @@ public sealed class BreakoutWorld
 
     private void ApplyPaddleSize(Viewport vp)
     {
-        // Apply width multipliers to each paddle.
-        // Difficulty sets the baseline width; power-ups multiply on top.
         float targetWidth = _basePaddleSize.X * _difficultyPaddleWidthMultiplier * _paddleWidthMultiplier;
         targetWidth = MathHelper.Clamp(targetWidth, 80f, vp.Width - 30f);
 
@@ -1592,14 +2036,12 @@ public sealed class BreakoutWorld
             float x = centerX - targetWidth * 0.5f;
             x = MathHelper.Clamp(x, 0f, vp.Width - targetWidth);
 
-            // Paddle.Size is readonly; recreate paddle with new width.
             _paddles[i] = new Paddle(new Vector2(x, p.Position.Y), new Vector2(targetWidth, _basePaddleSize.Y), _preset.PaddleSpeed);
         }
     }
 
     private void HandleWallCollisions(Viewport vp, Ball ball)
     {
-        // Left/right
         if (ball.Position.X - ball.Radius <= 0f)
         {
             ball.Position.X = ball.Radius;
@@ -1611,7 +2053,6 @@ public sealed class BreakoutWorld
             ball.Velocity.X *= -1f;
         }
 
-        // Top
         if (ball.Position.Y - ball.Radius <= 0f)
         {
             ball.Position.Y = ball.Radius;
@@ -1619,154 +2060,76 @@ public sealed class BreakoutWorld
         }
     }
 
-    private void HandlePaddleCollision(int ballIndex, DragonBreakInput[]? inputs, Viewport playfield)
+    private void HandlePaddleCollision(int ballIndex, DragonBreakInput[] inputs, Viewport playfield)
     {
         if ((uint)ballIndex >= (uint)_balls.Count) return;
 
         var ball = _balls[ballIndex];
-
         for (int pi = 0; pi < _paddles.Count; pi++)
         {
             var paddle = _paddles[pi];
             if (!ball.Bounds.Intersects(paddle.Bounds))
                 continue;
 
-            // Only the owning paddle can catch/bounce this ball.
-            int owner = Math.Clamp(ball.OwnerPlayerIndex, 0, _paddles.Count - 1);
-            if (pi != owner)
-            {
-                // Still allow bounce on other paddles (multiplayer overlap), but do not allow catch.
-            }
+            // Simple reflect upwards.
+            ball.Position.Y = paddle.Bounds.Top - ball.Radius - 0.5f;
+            ball.Velocity.Y = -Math.Abs(ball.Velocity.Y);
 
-            bool canCatch = false;
-            if (pi == owner && !ball.IsExtraBall)
-            {
-                bool isPrimary = owner < _primaryBallIndexByPlayer.Count && _primaryBallIndexByPlayer[owner] == ballIndex;
+            // Add some horizontal based on where it hit.
+            float rel = (ball.Position.X - paddle.Center.X) / Math.Max(1f, paddle.Size.X * 0.5f);
+            ball.Velocity.X += rel * 120f;
 
-                bool held = inputs != null && (uint)owner < (uint)inputs.Length && inputs[owner].CatchHeld;
-
-                // Only catch if the ball is above the paddle (and moving down or stationary).
-                bool ballAbovePaddle = ball.Position.Y < paddle.Bounds.Top;
-                bool movingDown = ball.Velocity.Y >= 0f;
-
-                bool armed = owner < _catchArmedByPlayer.Count && _catchArmedByPlayer[owner] && !(_catchArmedConsumedByPlayer.Count > owner && _catchArmedConsumedByPlayer[owner]);
-
-                canCatch = isPrimary && held && ballAbovePaddle && movingDown && armed;
-            }
-
-            if (canCatch)
+            // Catch mechanic: if armed, attach the PRIMARY ball to the paddle.
+            bool armed = pi < _catchArmedByPlayer.Count && _catchArmedByPlayer[pi];
+            if (armed && pi < _primaryBallIndexByPlayer.Count && _primaryBallIndexByPlayer[pi] == ballIndex)
             {
                 _ballServing[ballIndex] = true;
-                if (ballIndex < _ballCaught.Count)
-                    _ballCaught[ballIndex] = true;
-
+                if (ballIndex < _ballCaught.Count) _ballCaught[ballIndex] = true;
                 ball.Velocity = Vector2.Zero;
 
-                // Attach to the closest point on the paddle top, preserving left/middle/right position.
-                // Choose the closest X on the paddle (clamped so the ball stays above the paddle).
-                float minX = paddle.Bounds.Left + ball.Radius;
-                float maxX = paddle.Bounds.Right - ball.Radius;
-                float clampedX = MathHelper.Clamp(ball.Position.X, minX, maxX);
-                ball.Position = new Vector2(clampedX, paddle.Bounds.Top - ball.Radius - 0.5f);
-
-                // Store the offset so it stays in that spot while held.
                 EnsureBallListsSized(_balls.Count);
-                if ((uint)ballIndex < (uint)_ballServeOffsetX.Count)
-                {
-                    // Use paddle bounds midpoint to avoid any center rounding inconsistencies.
-                    float paddleMidX = (paddle.Bounds.Left + paddle.Bounds.Right) * 0.5f;
-                    _ballServeOffsetX[ballIndex] = clampedX - paddleMidX;
-                }
+                _ballServeOffsetX[ballIndex] = ball.Position.X - paddle.Center.X;
 
-                if (owner < _catchArmedConsumedByPlayer.Count)
-                    _catchArmedConsumedByPlayer[owner] = true;
-
-                // Only collide with one paddle per update.
-                break;
+                _catchArmedByPlayer[pi] = false;
+                _catchArmedConsumedByPlayer[pi] = true;
             }
 
-            // Normal bounce.
-            ball.Position.Y = paddle.Bounds.Top - ball.Radius - 0.5f;
-
-            float speed = ball.Velocity.Length();
-            speed = Math.Max(speed, GetTargetBallSpeedForLevel());
-
-            float paddleCenterX = paddle.Center.X;
-            float rel = (ball.Position.X - paddleCenterX) / (paddle.Size.X * 0.5f);
-            rel = MathHelper.Clamp(rel, -1f, 1f);
-
-            float maxAngle = MathHelper.ToRadians(65f);
-            float angle = MathHelper.Lerp(-maxAngle, maxAngle, (rel + 1f) * 0.5f);
-
-            Vector2 dir = new((float)Math.Sin(angle), -(float)Math.Cos(angle));
-            ball.Velocity = Vector2.Normalize(dir) * speed;
-
-            ball.Velocity *= 1.01f;
-
-            // Only collide with one paddle per update.
+            _balls[ballIndex] = ball;
             break;
         }
     }
 
     private void HandleBrickCollisions(Ball ball)
     {
-        Rectangle ballRect = ball.Bounds;
-
         for (int i = 0; i < _bricks.Count; i++)
         {
-            var brick = _bricks[i];
-            if (!brick.IsAlive) continue;
+            var b = _bricks[i];
+            if (!b.IsAlive) continue;
 
-            // In owned-bricks multiplayer, a ball may only damage its owner's bricks.
-            if (IsOwnedBricksMode && brick.OwnerPlayerIndex != ball.OwnerPlayerIndex)
+            if (!ball.Bounds.Intersects(b.Bounds))
                 continue;
 
-            if (!ballRect.Intersects(brick.Bounds))
-                continue;
-
-            var overlap = GetOverlap(ballRect, brick.Bounds);
-            if (overlap == Vector2.Zero)
-                continue;
-
-            int beforeHp = brick.HitPoints;
-            brick.Hit();
-
-            // SFX
-            if (brick.HitPoints <= 0 && beforeHp > 0)
-                _audio.OnBrickBreak(_totalTime);
-            else
-                _audio.OnBrickHit(_totalTime);
-
-            int points = 10;
-            if (brick.HitPoints <= 0 && beforeHp > 0)
-                points += 15;
-
-            int owner = Math.Clamp(ball.OwnerPlayerIndex, 0, Math.Max(0, _scoreByPlayer.Count - 1));
-            if (owner >= 0 && owner < _scoreByPlayer.Count)
-                _scoreByPlayer[owner] += (int)(points * _scoreMultiplier);
-
-            // (No legacy score mirroring; HUD reads from _scoreByPlayer.)
-
-            if (brick.HitPoints <= 0 && beforeHp > 0)
-                TrySpawnPowerUp(brick.Bounds);
-
-            if (Math.Abs(overlap.X) < Math.Abs(overlap.Y))
-            {
-                ball.Position.X += overlap.X;
+            var overlap = GetOverlap(ball.Bounds, b.Bounds);
+            if (overlap.X != 0)
                 ball.Velocity.X *= -1f;
-            }
-            else
-            {
-                ball.Position.Y += overlap.Y;
+            if (overlap.Y != 0)
                 ball.Velocity.Y *= -1f;
-            }
 
-            // Only handle one brick per frame for stability.
+            b.HitPoints--;
+            if (b.HitPoints <= 0)
+            {
+                TrySpawnPowerUp(b.Bounds);
+            }
+            _bricks[i] = b;
+
+            // Score
+            int points = (int)(10 * _scoreMultiplier);
+            for (int p = 0; p < _scoreByPlayer.Count; p++)
+                _scoreByPlayer[p] += points;
+
             break;
         }
     }
-
-    // --- Helpers restored (were accidentally removed) ---
 
     private static Vector2 GetOverlap(Rectangle a, Rectangle b)
     {
@@ -1956,6 +2319,16 @@ public sealed class BreakoutWorld
             FillOrganic(occ, rows, cols, target, rng);
         }
 
+        // Seed 1337 special: start with a mythic silhouette, then fill remaining density.
+        if (baseSeed == MythicSeed)
+        {
+            Array.Clear(occ);
+            int stamped = ApplyMythicSeed1337Layout(occ, target);
+            int remaining = Math.Max(0, target - stamped);
+            if (remaining > 0)
+                FillOrganic(occ, rows, cols, remaining, rng);
+        }
+
         // Instantiate bricks; apply per-row HP bias but stay inside difficulty bounds.
         int startX = sideMargin;
         int startY = topMargin;
@@ -2009,6 +2382,111 @@ public sealed class BreakoutWorld
             else
                 _bricks.Add(new Brick(bounds, baseHp, PaletteForHp(baseHp)));
         }
+    }
+
+    // Special seed: 1337 generates a mythic/dragon-stamped layout.
+    private const int MythicSeed = 1337;
+
+    private static int StampPattern(bool[,] occ, int top, int left, string[] pattern)
+    {
+        int rows = occ.GetLength(0);
+        int cols = occ.GetLength(1);
+        int placed = 0;
+
+        for (int pr = 0; pr < pattern.Length; pr++)
+        {
+            int rr = top + pr;
+            if ((uint)rr >= (uint)rows) continue;
+
+            string line = pattern[pr];
+            for (int pc = 0; pc < line.Length; pc++)
+            {
+                int cc = left + pc;
+                if ((uint)cc >= (uint)cols) continue;
+
+                if (line[pc] != '#')
+                    continue;
+
+                if (!occ[rr, cc])
+                {
+                    occ[rr, cc] = true;
+                    placed++;
+                }
+            }
+        }
+
+        return placed;
+    }
+
+    private static int StampPatternCentered(bool[,] occ, int top, string[] pattern)
+    {
+        int cols = occ.GetLength(1);
+        int width = 0;
+        for (int i = 0; i < pattern.Length; i++)
+            width = Math.Max(width, pattern[i].Length);
+
+        int left = Math.Max(0, (cols - width) / 2);
+        return StampPattern(occ, top, left, pattern);
+    }
+
+    private static int ApplyMythicSeed1337Layout(bool[,] occ, int target)
+    {
+        int rows = occ.GetLength(0);
+        int cols = occ.GetLength(1);
+
+        // Too small: don't force it.
+        if (rows < 6 || cols < 8 || target < 10)
+            return 0;
+
+        // Pixel-art patterns. '#' = brick, '.' (or anything else) = empty.
+        // These are compact so they still read at small grid sizes.
+        string[] dragonHead =
+        [
+            "....##....",
+            "...####...",
+            "..######..",
+            ".###..###.",
+            "###....###",
+            "##......##",
+        ];
+
+        string[] wyrm =
+        [
+            "....##........##....",
+            "...####......####...",
+            "..######....######..",
+            ".###..###..###..###.",
+            "###....######....###",
+            "##......####......##",
+            "..##......##......##.",
+            "...##............##..",
+        ];
+
+        string[] phoenix =
+        [
+            "##..............##",
+            ".##....####....##.",
+            "..##..######..##..",
+            "...##########...",
+            "....########....",
+            ".....######.....",
+            "......####......",
+        ];
+
+        int placed = 0;
+        int top = Math.Min(1, Math.Max(0, rows - 1));
+
+        bool canWyrm = rows >= 9 && cols >= 20 && target >= 26;
+        bool canPhoenix = rows >= 8 && cols >= 18 && target >= 22;
+
+        if (canWyrm)
+            placed += StampPatternCentered(occ, top, wyrm);
+        else if (canPhoenix)
+            placed += StampPatternCentered(occ, top, phoenix);
+        else
+            placed += StampPatternCentered(occ, top, dragonHead);
+
+        return Math.Min(placed, Math.Max(0, target));
     }
 
     private static int HashSeed(int baseSeed, int levelIndex, int difficultyId)
@@ -2145,337 +2623,4 @@ public sealed class BreakoutWorld
         occ[r, c] = true;
         return 1;
     }
-
-    private void DrawCenteredText(SpriteBatch sb, Viewport vp, string text, float y, Color color)
-    {
-        if (_hudFont == null)
-            return;
-
-        var ui = _settings?.Current.Ui ?? UiSettings.Default;
-        float scale = ui.HudScale;
-
-        var s = SafeText(text);
-        var size = _hudFont.MeasureString(s) * scale;
-        float x = (vp.Width - size.X) * 0.5f;
-        sb.DrawString(_hudFont, s, new Vector2(Math.Max(12, x), y), color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-    }
-
-    private void DrawMenu(SpriteBatch sb, Viewport vp)
-    {
-        if (_hudFont == null)
-            return;
-
-        DrawCenteredText(sb, vp, "DRAGONBREAK", 70, Color.White);
-
-        float startY = 150;
-        float lineH = 34;
-
-        string sel(MenuItem item, string label, string value)
-        {
-            bool selected = _menuItem == item;
-            string prefix = selected ? ">" : " ";
-            // Keep per-line readable; align-ish with separator.
-            return $"{prefix} {label}: {value}";
-        }
-
-        var lines = new List<(string Text, Color Color)>
-        {
-            (sel(MenuItem.GameMode, "Mode", _selectedGameMode.ToString()), _menuItem == MenuItem.GameMode ? Color.White : new Color(210, 210, 220)),
-            (sel(MenuItem.Players, "Players", _selectedPlayers.ToString()), _menuItem == MenuItem.Players ? Color.White : new Color(210, 210, 220)),
-            (sel(MenuItem.Difficulty, "Difficulty", DifficultyLabel(_selectedPresetIndex)), _menuItem == MenuItem.Difficulty ? Color.White : new Color(210, 210, 220)),
-            (sel(MenuItem.Settings, "Settings", "Open"), _menuItem == MenuItem.Settings ? Color.White : new Color(210, 210, 220)),
-            (sel(MenuItem.Start, "Start", "Go"), _menuItem == MenuItem.Start ? Color.White : new Color(210, 210, 220)),
-        };
-
-        for (int i = 0; i < lines.Count; i++)
-        {
-            DrawCenteredText(sb, vp, lines[i].Text, startY + i * lineH, lines[i].Color);
-        }
-
-        DrawCenteredText(sb, vp, "Up/Down selects. Left/Right changes values. Confirm selects.", vp.Height - 90, new Color(180, 180, 190));
-        DrawCenteredText(sb, vp, "Back opens Settings. Esc exits.", vp.Height - 60, new Color(180, 180, 190));
-    }
-
-    private void DrawSettings(SpriteBatch sb, Viewport vp)
-    {
-        if (_hudFont == null)
-            return;
-
-        var pending = _settings?.Pending;
-        if (pending == null)
-        {
-            DrawCenteredText(sb, vp, "Settings unavailable", 120, Color.White);
-            return;
-        }
-
-        DrawCenteredText(sb, vp, "SETTINGS", 60, Color.White);
-
-        string sel(SettingsItem item, string label) => _settingsItem == item ? $"> {label}" : $"  {label}";
-
-        float startY = 120;
-        float lineH = 28;
-
-        var display = pending.Display;
-        var audio = pending.Audio;
-        var gameplay = pending.Gameplay;
-        var ui = pending.Ui;
-
-        var lines = new List<(SettingsItem Item, string Text)>
-        {
-            (SettingsItem.WindowMode, sel(SettingsItem.WindowMode, $"Window Mode: {display.WindowMode}")),
-            (SettingsItem.Resolution, sel(SettingsItem.Resolution, $"Resolution: {display.Width}x{display.Height}")),
-            (SettingsItem.VSync, sel(SettingsItem.VSync, $"VSync: {(display.VSync ? "On" : "Off")}")),
-
-            (SettingsItem.MasterVolume, sel(SettingsItem.MasterVolume, $"Master Volume: {(int)(audio.MasterVolume * 100)}%")),
-            (SettingsItem.BgmVolume, sel(SettingsItem.BgmVolume, $"BGM Volume: {(int)(audio.BgmVolume * 100)}%")),
-            (SettingsItem.SfxVolume, sel(SettingsItem.SfxVolume, $"SFX Volume: {(int)(audio.SfxVolume * 100)}%")),
-
-            (SettingsItem.HudEnabled, sel(SettingsItem.HudEnabled, $"HUD: {(ui.ShowHud ? "On" : "Off")}")),
-            (SettingsItem.HudScale, sel(SettingsItem.HudScale, $"HUD Scale: {ui.HudScale:0.00}x")),
-            (SettingsItem.HudP1, sel(SettingsItem.HudP1, $"Show P1 HUD: {(ui.ShowP1Hud ? "On" : "Off")}")),
-            (SettingsItem.HudP2, sel(SettingsItem.HudP2, $"Show P2 HUD: {(ui.ShowP2Hud ? "On" : "Off")}")),
-            (SettingsItem.HudP3, sel(SettingsItem.HudP3, $"Show P3 HUD: {(ui.ShowP3Hud ? "On" : "Off")}")),
-            (SettingsItem.HudP4, sel(SettingsItem.HudP4, $"Show P4 HUD: {(ui.ShowP4Hud ? "On" : "Off")}")),
-
-            (SettingsItem.ContinueMode, sel(SettingsItem.ContinueMode, $"Continue Mode: {ContinueModeLabel(gameplay.ContinueMode)}")),
-            (SettingsItem.AutoContinueSeconds, sel(SettingsItem.AutoContinueSeconds, $"Auto Continue: {gameplay.AutoContinueSeconds:0.0}s")),
-
-            (SettingsItem.LevelSeed, sel(SettingsItem.LevelSeed, $"Level Seed: {gameplay.LevelSeed}")),
-            (SettingsItem.LevelSeedRandomize, sel(SettingsItem.LevelSeedRandomize, "Seed: Randomize")),
-            (SettingsItem.LevelSeedReset, sel(SettingsItem.LevelSeedReset, "Seed: Reset (1337)")),
-
-            (SettingsItem.Apply, sel(SettingsItem.Apply, "APPLY")),
-            (SettingsItem.Cancel, sel(SettingsItem.Cancel, "CANCEL")),
-        };
-
-        for (int i = 0; i < lines.Count; i++)
-        {
-            Color c = _settingsItem == lines[i].Item ? Color.White : new Color(210, 210, 220);
-            DrawCenteredText(sb, vp, lines[i].Text, startY + i * lineH, c);
-        }
-
-        DrawCenteredText(sb, vp, "Up/Down select. Left/Right change. Confirm = activate. Back = cancel.", vp.Height - 60, new Color(180, 180, 190));
-    }
-
-    private void DrawHud(SpriteBatch sb, Viewport vp)
-    {
-        if (_hudFont == null)
-            return;
-
-        var ui = _settings?.Current.Ui ?? UiSettings.Default;
-        if (!ui.ShowHud)
-            return;
-
-        float scale = ui.HudScale;
-
-        // Hard UI bar at the top that is NOT part of the playfield.
-        // This replaces the old translucent overlay behavior.
-        int hudBarH = GetHudBarHeight(vp);
-        if (hudBarH > 0)
-            sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, hudBarH), Color.Black);
-
-        // Keep HUD text inside the bar.
-        float topPadding = 8f;
-        float lineY1 = topPadding;
-        float lineY2 = topPadding + (_hudFont.LineSpacing * scale);
-        float lineY3 = topPadding + (_hudFont.LineSpacing * scale) * 2f;
-
-        // Level + mode title in top center.
-        string top = $"LEVEL {_levelIndex + 1}   MODE {_selectedGameMode}";
-        var topSafe = SafeText(top);
-        var topSize = _hudFont.MeasureString(topSafe) * scale;
-        sb.DrawString(_hudFont, topSafe, new Vector2((vp.Width - topSize.X) * 0.5f, lineY1), Color.White, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-
-        void DrawPlayerPanel(int player, Vector2 anchor, bool rightAlign)
-        {
-            if (player < 0 || player >= _activePlayerCount)
-                return;
-            bool show = player switch
-            {
-                0 => ui.ShowP1Hud,
-                1 => ui.ShowP2Hud,
-                2 => ui.ShowP3Hud,
-                3 => ui.ShowP4Hud,
-                _ => true,
-            };
-
-            if (!show) return;
-
-            int score = player < _scoreByPlayer.Count ? _scoreByPlayer[player] : 0;
-            string balls = IsCasualNoLose ? "∞" : (player < _livesByPlayer.Count ? _livesByPlayer[player].ToString() : "0");
-
-            string text = $"P{player + 1}  SCORE {score}  BALLS {balls}";
-            string safe = SafeText(text);
-            var size = _hudFont.MeasureString(safe) * scale;
-
-            Vector2 pos = rightAlign
-                ? new Vector2(anchor.X - size.X, anchor.Y)
-                : anchor;
-
-            var color = PlayerBaseColors[Math.Clamp(player, 0, PlayerBaseColors.Length - 1)];
-            sb.DrawString(_hudFont, safe, pos, color, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-        }
-
-        // Put all player panels in the top bar.
-        DrawPlayerPanel(0, new Vector2(12, lineY2), rightAlign: false);
-        DrawPlayerPanel(1, new Vector2(vp.Width - 12, lineY2), rightAlign: true);
-
-        // If 3–4 players, place them on the third line inside the bar.
-        DrawPlayerPanel(2, new Vector2(12, lineY3), rightAlign: false);
-        DrawPlayerPanel(3, new Vector2(vp.Width - 12, lineY3), rightAlign: true);
-
-        // Interstitial prompt line: keep it in the HUD bar if possible; otherwise fall back to bottom.
-        if (_mode == WorldMode.LevelInterstitial)
-        {
-            string prompt = (_settings?.Current.Gameplay.ContinueMode ?? ContinueMode.PromptThenAuto) == ContinueMode.Prompt
-                ? "Continue or nah? (Confirm)"
-                : "Continue or nah? (Confirm)  |  auto...";
-
-            string line = $"{prompt}   {_levelInterstitialLine}";
-            string safeLine = SafeText(line);
-
-            float y = lineY3 + (_hudFont.LineSpacing * scale);
-            bool fitsTop = y + (_hudFont.LineSpacing * scale) <= hudBarH;
-
-            if (fitsTop)
-            {
-                sb.DrawString(_hudFont, safeLine, new Vector2(12, y), _levelInterstitialWasWin ? new Color(120, 235, 120) : new Color(255, 120, 80), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-            }
-            else
-            {
-                sb.DrawString(_hudFont, safeLine, new Vector2(12, vp.Height - (12 + _hudFont.LineSpacing * scale)), _levelInterstitialWasWin ? new Color(120, 235, 120) : new Color(255, 120, 80), 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Draws gameplay only (playfield: bricks/paddles/balls/powerups).
-    /// This is intended to be called with a scissor rect that clips to the playfield.
-    /// </summary>
-    public void Draw(SpriteBatch sb, Viewport vp)
-    {
-        // Background
-        sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, vp.Height), new Color(16, 16, 20));
-
-        // Translate gameplay drawing down so (0,0) in game space maps to the top of the PLAYFIELD,
-        // not the top of the window (which is reserved for the HUD bar).
-        int hudH = GetHudBarHeight(vp);
-
-        // Bricks
-        for (int i = 0; i < _bricks.Count; i++)
-        {
-            var b = _bricks[i];
-            if (!b.IsAlive) continue;
-
-            Color c = Color.White;
-            try
-            {
-                if (b.Palette != null && b.Palette.Length > 0)
-                {
-                    int hpIndex = Math.Clamp(b.HitPoints - 1, 0, b.Palette.Length - 1);
-                    c = b.Palette[hpIndex];
-                }
-            }
-            catch
-            {
-                c = Color.White;
-            }
-
-            var r = b.Bounds;
-            r.Y += hudH;
-            sb.Draw(_pixel, r, c);
-        }
-
-        // Paddles
-        for (int i = 0; i < _paddles.Count; i++)
-        {
-            var r = _paddles[i].Bounds;
-            r.Y += hudH;
-            sb.Draw(_pixel, r, PlayerBaseColors[Math.Clamp(i, 0, PlayerBaseColors.Length - 1)]);
-        }
-
-        // Balls
-        for (int i = 0; i < _balls.Count; i++)
-        {
-            var ball = _balls[i];
-            var r = ball.Bounds;
-            r.Y += hudH;
-
-            var c = ball.DrawColor ?? (ball.IsExtraBall ? Color.White : PlayerBaseColors[Math.Clamp(ball.OwnerPlayerIndex, 0, PlayerBaseColors.Length - 1)]);
-            sb.Draw(_pixel, r, c);
-        }
-
-        // PowerUps
-        for (int i = 0; i < _powerUps.Count; i++)
-        {
-            var r = _powerUps[i].Bounds;
-            r.Y += hudH;
-            sb.Draw(_pixel, r, Color.Gold);
-        }
-    }
-
-    /// <summary>
-    /// Draws screen-space UI (menus/settings/HUD/top bar). Call this WITHOUT scissor.
-    /// </summary>
-    public void DrawUi(SpriteBatch sb, Viewport vp)
-    {
-        // For now, if we're in menu/settings we only show those screens.
-        if (_mode == WorldMode.Menu)
-        {
-            DrawMenu(sb, vp);
-            return;
-        }
-
-        if (_mode == WorldMode.Settings)
-        {
-            DrawSettings(sb, vp);
-            return;
-        }
-
-        // In-game HUD + top bar.
-        DrawHud(sb, vp);
-
-        // Toast (screen-space) anchored to playfield bottom-right.
-        if (_hudFont != null && _toastTimeLeft > 0f && !string.IsNullOrWhiteSpace(_toastText))
-        {
-            var playfield = GetPlayfieldViewport(vp);
-
-            var ui = _settings?.Current.Ui ?? UiSettings.Default;
-            float scale = MathHelper.Clamp(ui.HudScale, 0.5f, 2.5f);
-
-            Vector2 size = _hudFont.MeasureString(_toastText) * scale;
-
-            const float margin = 12f;
-            float x = playfield.X + playfield.Width - margin - size.X;
-            float y = playfield.Y + playfield.Height - margin - size.Y;
-
-            float a = MathHelper.Clamp(_toastTimeLeft / ToastDurationSeconds, 0f, 1f);
-            var col = Color.White * a;
-            var shadow = Color.Black * (0.65f * a);
-
-            sb.DrawString(_hudFont, _toastText, new Vector2(x + 1, y + 1), shadow, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-            sb.DrawString(_hudFont, _toastText, new Vector2(x, y), col, 0f, Vector2.Zero, scale, SpriteEffects.None, 0f);
-        }
-    }
-
-    private void ShowToast(string text, float durationSeconds)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return;
-
-        _toastText = text;
-        _toastTimeLeft = Math.Max(_toastTimeLeft, durationSeconds);
-    }
-
-    private static string GetPowerUpToastText(PowerUpType type)
-        => type switch
-        {
-            PowerUpType.ExpandPaddle => "Paddle expanded",
-            PowerUpType.SlowBall => "Ball slowed",
-            PowerUpType.FastBall => "Ball sped up",
-            PowerUpType.ExtraLife => "+1 Life",
-            PowerUpType.ScoreBoost => "Score x2",
-            PowerUpType.MultiBall => "Multiball",
-            _ => type.ToString(),
-        };
 }

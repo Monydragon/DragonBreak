@@ -10,6 +10,7 @@ public enum PowerUpType
     ExtraLife,
     ScoreBoost,
     MultiBall,
+    ScoreBurst,
 }
 
 public sealed class PowerUp

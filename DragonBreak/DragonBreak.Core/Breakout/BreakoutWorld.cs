@@ -24,6 +24,20 @@ public sealed class BreakoutWorld
     private readonly List<Ball> _balls = new();
     private readonly List<bool> _ballServing = new();
 
+    // Per-ball: time since last launch/serve (seconds). Used for a short speed ramp after launch.
+    private readonly List<float> _ballLaunchAgeSeconds = new();
+
+    // Launch feel tuning.
+    private const float ServeRampDurationSeconds = 1.25f;
+    private const float ServeStartSpeedMultiplier = 0.78f;
+
+    // How strongly paddle horizontal velocity influences the launch direction.
+    // Units: (ball horizontal speed) = paddleVelX * factor.
+    private const float ServePaddleMomentumFactor = 0.55f;
+
+    // Clamp to avoid extreme side-launches.
+    private const float ServeMaxAngleDegrees = 55f;
+
     private readonly List<Brick> _bricks = new();
     private readonly List<PowerUp> _powerUps = new();
 
@@ -444,6 +458,10 @@ public sealed class BreakoutWorld
         if ((uint)ballIndex < (uint)_ballCaught.Count)
             _ballCaught[ballIndex] = false;
 
+        // Reset launch ramp for this ball.
+        if ((uint)ballIndex < (uint)_ballLaunchAgeSeconds.Count)
+            _ballLaunchAgeSeconds[ballIndex] = 0f;
+
         // Attach to the owning paddle if possible.
         int desiredPaddle = Math.Clamp(_balls[ballIndex].OwnerPlayerIndex, 0, _paddles.Count - 1);
         int paddleIndex = Math.Clamp(desiredPaddle, 0, _paddles.Count - 1);
@@ -465,15 +483,66 @@ public sealed class BreakoutWorld
     private float GetTargetBallSpeedForLevel()
         => (_preset.BallBaseSpeed + _levelIndex * _preset.SpeedRampPerLevel) * _ballSpeedMultiplier;
 
+    private float GetServeRampMultiplier(int ballIndex)
+    {
+        if ((uint)ballIndex >= (uint)_ballLaunchAgeSeconds.Count)
+            return 1f;
+
+        // If age is 0, we're at start multiplier; once age >= duration, multiplier is 1.
+        float t = _ballLaunchAgeSeconds[ballIndex];
+        if (t <= 0f) return ServeStartSpeedMultiplier;
+        if (t >= ServeRampDurationSeconds) return 1f;
+
+        float u = t / ServeRampDurationSeconds;
+        // Smoothstep for a nicer feel.
+        u = u * u * (3f - 2f * u);
+
+        return MathHelper.Lerp(ServeStartSpeedMultiplier, 1f, u);
+    }
+
+    private void EnsureBallListsSized(int ballCount)
+    {
+        while (_ballLaunchAgeSeconds.Count < ballCount)
+            _ballLaunchAgeSeconds.Add(0f);
+        while (_ballLaunchAgeSeconds.Count > ballCount)
+            _ballLaunchAgeSeconds.RemoveAt(_ballLaunchAgeSeconds.Count - 1);
+    }
+
     private void Serve(int ballIndex)
     {
         if ((uint)ballIndex >= (uint)_balls.Count) return;
 
         _ballServing[ballIndex] = false;
 
-        // Polished launch: straight up from the paddle (no random angle).
-        float speed = GetTargetBallSpeedForLevel();
-        _balls[ballIndex].Velocity = new Vector2(0f, -speed);
+        int owner = Math.Clamp(_balls[ballIndex].OwnerPlayerIndex, 0, _paddles.Count - 1);
+        int paddleIndex = Math.Clamp(owner, 0, _paddles.Count - 1);
+
+        float targetSpeed = GetTargetBallSpeedForLevel();
+
+        // Blend paddle momentum into the launch direction.
+        // Start with "mostly up" but allow a controllable left/right bias.
+        float paddleVx = _paddles.Count > 0 ? _paddles[paddleIndex].Velocity.X : 0f;
+        float desiredVx = paddleVx * ServePaddleMomentumFactor;
+
+        // Convert desiredVx into an angle and clamp it.
+        // We build a direction vector by clamping the angle from vertical.
+        float maxAngle = MathHelper.ToRadians(ServeMaxAngleDegrees);
+        // Angle from vertical such that sin(angle) = vx / speed.
+        float unclamped = targetSpeed > 0f ? (float)Math.Asin(MathHelper.Clamp(desiredVx / targetSpeed, -1f, 1f)) : 0f;
+        float angle = MathHelper.Clamp(unclamped, -maxAngle, maxAngle);
+
+        Vector2 dir = new((float)Math.Sin(angle), -(float)Math.Cos(angle));
+        if (dir == Vector2.Zero)
+            dir = new Vector2(0f, -1f);
+        else
+            dir = Vector2.Normalize(dir);
+
+        // Start a bit slower, then ramp up smoothly.
+        float startSpeed = targetSpeed * ServeStartSpeedMultiplier;
+        _balls[ballIndex].Velocity = dir * startSpeed;
+
+        EnsureBallListsSized(_balls.Count);
+        _ballLaunchAgeSeconds[ballIndex] = 0f;
     }
 
     // Replace Update signature to accept multiple players.
@@ -506,6 +575,8 @@ public sealed class BreakoutWorld
         var playfield = GetPlayfieldViewport(vp);
 
         UpdateEffects(dt);
+
+        EnsureBallListsSized(_balls.Count);
 
         // Clear launch suppression once the player is no longer holding the catch/launch button.
         if (inputs != null)
@@ -619,6 +690,19 @@ public sealed class BreakoutWorld
 
                 continue;
             }
+
+            // Age since last launch for ramping speed.
+            if ((uint)i < (uint)_ballLaunchAgeSeconds.Count && _ballLaunchAgeSeconds[i] < ServeRampDurationSeconds)
+                _ballLaunchAgeSeconds[i] += dt;
+
+            // Apply post-launch speed ramp without changing direction.
+            float rampMul = GetServeRampMultiplier(i);
+            float desiredSpeed = GetTargetBallSpeedForLevel() * rampMul;
+
+            // Only normalize if the ball has non-zero velocity.
+            float len = _balls[i].Velocity.Length();
+            if (len > 0.001f)
+                _balls[i].Velocity = _balls[i].Velocity * (desiredSpeed / len);
 
             _balls[i].Update(dt);
 

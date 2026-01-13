@@ -132,6 +132,9 @@ public sealed class BreakoutWorld
 
     private Vector2 _basePaddleSize;
 
+    // Difficulty affects baseline paddle width (before any temporary power-ups).
+    private float _difficultyPaddleWidthMultiplier = 1f;
+
     // Powerup effects (simple timed multipliers)
     private float _paddleWidthMultiplier = 1f;
     private float _paddleWidthTimeLeft;
@@ -1068,6 +1071,7 @@ public sealed class BreakoutWorld
                 // Persist selected difficulty to settings so casual/no-lose rules apply.
                 _selectedPresetIndex = Math.Clamp(_selectedPresetIndex, 0, Presets.Length - 1);
                 _selectedDifficultyId = PresetIndexToDifficulty(_selectedPresetIndex);
+                _difficultyPaddleWidthMultiplier = GetDifficultyPaddleWidthMultiplier(_selectedDifficultyId);
 
                 if (_settings != null)
                 {
@@ -1153,6 +1157,25 @@ public sealed class BreakoutWorld
             _ => DifficultyId.Normal,
         };
 
+    private static float GetDifficultyPaddleWidthMultiplier(DifficultyId id)
+        => id switch
+        {
+            // Normal is the baseline ("3 units" wide).
+            DifficultyId.Normal => 1.00f,
+
+            // Easier difficulties: larger paddle.
+            DifficultyId.Casual => 1.5f,
+            DifficultyId.VeryEasy => 1.25f,
+            DifficultyId.Easy => 0.75f,
+
+            // Harder difficulties: smaller paddle.
+            DifficultyId.Hard => 0.5f,
+            DifficultyId.VeryHard => 0.40f,
+            DifficultyId.Extreme => 0.25f,
+
+            _ => 1.00f,
+        };
+
     private void SyncSelectionsFromSettings()
     {
         if (_settings == null) return;
@@ -1161,6 +1184,7 @@ public sealed class BreakoutWorld
         _selectedDifficultyId = s.Gameplay.Difficulty;
         _selectedPresetIndex = Math.Clamp(DifficultyToPresetIndex(_selectedDifficultyId), 0, Presets.Length - 1);
         _preset = Presets[_selectedPresetIndex];
+        _difficultyPaddleWidthMultiplier = GetDifficultyPaddleWidthMultiplier(_selectedDifficultyId);
     }
 
     private void EnsureResolutionIndex(int w, int h)
@@ -1555,8 +1579,9 @@ public sealed class BreakoutWorld
 
     private void ApplyPaddleSize(Viewport vp)
     {
-        // Apply width multiplier to each paddle without allocating new paddles.
-        float targetWidth = _basePaddleSize.X * _paddleWidthMultiplier;
+        // Apply width multipliers to each paddle.
+        // Difficulty sets the baseline width; power-ups multiply on top.
+        float targetWidth = _basePaddleSize.X * _difficultyPaddleWidthMultiplier * _paddleWidthMultiplier;
         targetWidth = MathHelper.Clamp(targetWidth, 80f, vp.Width - 30f);
 
         for (int i = 0; i < _paddles.Count; i++)

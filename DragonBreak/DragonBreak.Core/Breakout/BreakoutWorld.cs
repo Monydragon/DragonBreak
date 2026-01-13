@@ -24,6 +24,10 @@ public sealed class BreakoutWorld
     private readonly List<Ball> _balls = new();
     private readonly List<bool> _ballServing = new();
 
+    // Per-ball: horizontal offset from owning paddle center while in serving/caught state.
+    // This preserves left/middle/right catch position (serving state otherwise re-centers every frame).
+    private readonly List<float> _ballServeOffsetX = new();
+
     // Per-ball: time since last launch/serve (seconds). Used for a short speed ramp after launch.
     private readonly List<float> _ballLaunchAgeSeconds = new();
 
@@ -462,6 +466,11 @@ public sealed class BreakoutWorld
         if ((uint)ballIndex < (uint)_ballLaunchAgeSeconds.Count)
             _ballLaunchAgeSeconds[ballIndex] = 0f;
 
+        // Reset stored serve offset (default centered).
+        EnsureBallListsSized(_balls.Count);
+        if ((uint)ballIndex < (uint)_ballServeOffsetX.Count)
+            _ballServeOffsetX[ballIndex] = 0f;
+
         // Attach to the owning paddle if possible.
         int desiredPaddle = Math.Clamp(_balls[ballIndex].OwnerPlayerIndex, 0, _paddles.Count - 1);
         int paddleIndex = Math.Clamp(desiredPaddle, 0, _paddles.Count - 1);
@@ -506,6 +515,11 @@ public sealed class BreakoutWorld
             _ballLaunchAgeSeconds.Add(0f);
         while (_ballLaunchAgeSeconds.Count > ballCount)
             _ballLaunchAgeSeconds.RemoveAt(_ballLaunchAgeSeconds.Count - 1);
+
+        while (_ballServeOffsetX.Count < ballCount)
+            _ballServeOffsetX.Add(0f);
+        while (_ballServeOffsetX.Count > ballCount)
+            _ballServeOffsetX.RemoveAt(_ballServeOffsetX.Count - 1);
     }
 
     private void Serve(int ballIndex)
@@ -638,7 +652,28 @@ public sealed class BreakoutWorld
                 int owner = Math.Clamp(_balls[i].OwnerPlayerIndex, 0, _paddles.Count - 1);
                 int paddleIndex = Math.Clamp(owner, 0, _paddles.Count - 1);
 
-                _balls[i].Position = _paddles[paddleIndex].Center - new Vector2(0, _balls[i].Radius + 14);
+                // If this ball just entered serving state without an explicit offset recorded,
+                // derive it from current X so it doesn't snap to center.
+                if ((uint)i < (uint)_ballServeOffsetX.Count)
+                {
+                    // If the offset is ~0 but the ball is visibly not centered, capture it.
+                    float currentOffset = _balls[i].Position.X - _paddles[paddleIndex].Center.X;
+                    if (Math.Abs(_ballServeOffsetX[i]) < 0.001f && Math.Abs(currentOffset) > 0.5f)
+                        _ballServeOffsetX[i] = currentOffset;
+                }
+
+                float offsetX = (uint)i < (uint)_ballServeOffsetX.Count ? _ballServeOffsetX[i] : 0f;
+
+                float minOffset = -(_paddles[paddleIndex].Size.X * 0.5f) + _balls[i].Radius;
+                float maxOffset = (_paddles[paddleIndex].Size.X * 0.5f) - _balls[i].Radius;
+                offsetX = MathHelper.Clamp(offsetX, minOffset, maxOffset);
+
+                if ((uint)i < (uint)_ballServeOffsetX.Count)
+                    _ballServeOffsetX[i] = offsetX;
+
+                _balls[i].Position = new Vector2(
+                    _paddles[paddleIndex].Center.X + offsetX,
+                    _paddles[paddleIndex].Bounds.Top - _balls[i].Radius - 0.5f);
 
                 bool catchReleased = false;
                 bool servePressed = false;
@@ -1602,8 +1637,21 @@ public sealed class BreakoutWorld
 
                 ball.Velocity = Vector2.Zero;
 
-                // Attach to paddle.
-                ball.Position = paddle.Center - new Vector2(0, ball.Radius + 14);
+                // Attach to the closest point on the paddle top, preserving left/middle/right position.
+                // Choose the closest X on the paddle (clamped so the ball stays above the paddle).
+                float minX = paddle.Bounds.Left + ball.Radius;
+                float maxX = paddle.Bounds.Right - ball.Radius;
+                float clampedX = MathHelper.Clamp(ball.Position.X, minX, maxX);
+                ball.Position = new Vector2(clampedX, paddle.Bounds.Top - ball.Radius - 0.5f);
+
+                // Store the offset so it stays in that spot while held.
+                EnsureBallListsSized(_balls.Count);
+                if ((uint)ballIndex < (uint)_ballServeOffsetX.Count)
+                {
+                    // Use paddle bounds midpoint to avoid any center rounding inconsistencies.
+                    float paddleMidX = (paddle.Bounds.Left + paddle.Bounds.Right) * 0.5f;
+                    _ballServeOffsetX[ballIndex] = clampedX - paddleMidX;
+                }
 
                 if (owner < _catchArmedConsumedByPlayer.Count)
                     _catchArmedConsumedByPlayer[owner] = true;

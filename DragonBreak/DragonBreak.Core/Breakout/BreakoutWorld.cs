@@ -7,14 +7,14 @@ using DragonBreak.Core.Breakout.Ui;
 using DragonBreak.Core.Graphics;
 using DragonBreak.Core.Input;
 using DragonBreak.Core.Settings;
+using DragonBreak.Core.Highscores;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Content;
 using Microsoft.Xna.Framework.Graphics;
-using System.Security.Cryptography;
 
 namespace DragonBreak.Core.Breakout;
 
-public sealed class BreakoutWorld
+public sealed partial class BreakoutWorld
 {
     private readonly Random _rng = new();
 
@@ -53,6 +53,9 @@ public sealed class BreakoutWorld
         Playing,
         LevelInterstitial,
         Paused,
+        HighScores,
+        NameEntry,
+        GameOver,
     }
 
     private readonly struct DifficultyPreset
@@ -180,6 +183,7 @@ public sealed class BreakoutWorld
         GameMode,
         Players,
         Difficulty,
+        HighScores,
         Settings,
         Start,
     }
@@ -191,6 +195,38 @@ public sealed class BreakoutWorld
     private bool _menuDownConsumed;
     private bool _menuLeftConsumed;
     private bool _menuRightConsumed;
+
+    // Highscores + game over UI
+    private HighScoreService? _highscores;
+    private HighScoresScreen? _highScoresScreen;
+    private NameEntryScreen? _nameEntryScreen;
+    private GameOverScreen? _gameOverScreen;
+
+    // Highscores screen return target (menu vs paused)
+    private WorldMode _returnModeAfterHighScores = WorldMode.Menu;
+
+    private GameModeId CurrentModeId
+        => _selectedGameMode switch
+        {
+            GameMode.Arcade => GameModeId.Arcade,
+            GameMode.Story => GameModeId.Story,
+            GameMode.Puzzle => GameModeId.Puzzle,
+            _ => GameModeId.Arcade,
+        };
+
+    private void ShowHighScores(WorldMode returnTo)
+    {
+        if (_highScoresScreen == null)
+            return;
+
+        // Ensure mode/difficulty reflect the current menu selections when opening highscores.
+        _selectedPresetIndex = Math.Clamp(_selectedPresetIndex, 0, Presets.Length - 1);
+        _selectedDifficultyId = PresetIndexToDifficulty(_selectedPresetIndex);
+
+        _returnModeAfterHighScores = returnTo;
+        _highScoresScreen.Show(CurrentModeId, _selectedDifficultyId);
+        _mode = WorldMode.HighScores;
+    }
 
     // Settings debouncing so left/right changes only move one step per input.
     private bool _settingsLeftConsumed;
@@ -339,12 +375,27 @@ public sealed class BreakoutWorld
         _displayModes = services.GetService(typeof(DisplayModeService)) as DisplayModeService;
         _graphics = services.GetService(typeof(GraphicsDeviceManager)) as GraphicsDeviceManager;
 
+        _highscores = services.GetService(typeof(HighScoreService)) as HighScoreService;
+        if (_highscores != null)
+        {
+            _highScoresScreen = new HighScoresScreen(_highscores);
+            _nameEntryScreen = new NameEntryScreen();
+            _gameOverScreen = new GameOverScreen(_highscores);
+        }
+
         if (_graphics != null && _displayModes != null)
         {
             _resolutions = new List<ResolutionOption>(_displayModes.GetSupportedResolutions(_graphics));
         }
 
         SyncSelectionsFromSettings();
+    }
+
+    // Forward raw typed characters from the Game (Window.TextInput) to the active UI screen.
+    public void OnTextInput(char c)
+    {
+        if (_mode == WorldMode.NameEntry && _nameEntryScreen != null)
+            _nameEntryScreen.OnTextInput(c);
     }
 
     private void StartNewGame(Viewport vp, DifficultyPreset preset)
@@ -600,6 +651,79 @@ public sealed class BreakoutWorld
         if (_mode == WorldMode.Paused)
         {
             UpdatePaused(inputs, vp, dt);
+            return;
+        }
+
+        if (_mode == WorldMode.HighScores)
+        {
+            if (_highScoresScreen == null)
+            {
+                _mode = WorldMode.Menu;
+                return;
+            }
+
+            _highScoresScreen.Update(inputs, vp, dt);
+            if (_highScoresScreen.ConsumeAction() == HighScoresScreen.HighScoresAction.Back)
+            {
+                // Return to whichever screen opened highscores.
+                _mode = _returnModeAfterHighScores;
+            }
+            return;
+        }
+
+        if (_mode == WorldMode.NameEntry)
+        {
+            if (_nameEntryScreen == null || _highscores == null)
+            {
+                _mode = WorldMode.Menu;
+                return;
+            }
+
+            _nameEntryScreen.Update(inputs, vp, dt);
+            switch (_nameEntryScreen.ConsumeAction())
+            {
+                case NameEntryScreen.NameEntryAction.Submitted:
+                {
+                    var ctx = _nameEntryScreen.GetContext();
+                    var name = _nameEntryScreen.GetSubmittedName();
+                    var entry = HighScoreEntry.Create(name, ctx.FinalScore, ctx.Mode, ctx.Difficulty, ctx.LevelReached, ctx.Seed);
+                    bool saved = _highscores.TrySubmit(entry);
+
+                    _gameOverScreen?.Show(ctx.FinalScore, ctx.Mode, ctx.Difficulty, ctx.LevelReached, ctx.Seed, showSavedMessage: saved);
+                    _mode = WorldMode.GameOver;
+                    break;
+                }
+                case NameEntryScreen.NameEntryAction.Canceled:
+                {
+                    var ctx = _nameEntryScreen.GetContext();
+                    _gameOverScreen?.Show(ctx.FinalScore, ctx.Mode, ctx.Difficulty, ctx.LevelReached, ctx.Seed, showSavedMessage: false);
+                    _mode = WorldMode.GameOver;
+                    break;
+                }
+            }
+            return;
+        }
+
+        if (_mode == WorldMode.GameOver)
+        {
+            if (_gameOverScreen == null)
+            {
+                _mode = WorldMode.Menu;
+                return;
+            }
+
+            _gameOverScreen.Update(inputs, vp, dt);
+            switch (_gameOverScreen.ConsumeAction())
+            {
+                case GameOverScreen.GameOverAction.Retry:
+                    StartNewGame(vp, _preset);
+                    _mode = WorldMode.Playing;
+                    break;
+                case GameOverScreen.GameOverAction.MainMenu:
+                    _mode = WorldMode.Menu;
+                    _menuItem = MenuItem.Start;
+                    break;
+            }
             return;
         }
 
@@ -911,6 +1035,10 @@ public sealed class BreakoutWorld
                 break;
             }
 
+            case PauseMenuScreen.PauseAction.HighScores:
+                ShowHighScores(WorldMode.Paused);
+                break;
+
             case PauseMenuScreen.PauseAction.MainMenu:
                 _mode = WorldMode.Menu;
                 _menuItem = MenuItem.Start;
@@ -1110,6 +1238,7 @@ public sealed class BreakoutWorld
             (sel(MenuItem.GameMode, "Mode", _selectedGameMode.ToString()), _menuItem == MenuItem.GameMode ? Color.White : new Color(210, 210, 220)),
             (sel(MenuItem.Players, "Players", _selectedPlayers.ToString()), _menuItem == MenuItem.Players ? Color.White : new Color(210, 210, 220)),
             (sel(MenuItem.Difficulty, "Difficulty", DifficultyLabel(_selectedPresetIndex)), _menuItem == MenuItem.Difficulty ? Color.White : new Color(210, 210, 220)),
+            (sel(MenuItem.HighScores, "High Scores", "View"), _menuItem == MenuItem.HighScores ? Color.White : new Color(210, 210, 220)),
             (sel(MenuItem.Settings, "Settings", "Open"), _menuItem == MenuItem.Settings ? Color.White : new Color(210, 210, 220)),
             (sel(MenuItem.Start, "Start", "Go"), _menuItem == MenuItem.Start ? Color.White : new Color(210, 210, 220)),
         };
@@ -1388,6 +1517,58 @@ public sealed class BreakoutWorld
             return;
         }
 
+        if (_mode == WorldMode.HighScores)
+        {
+            if (_hudFont == null || _highScoresScreen == null)
+                return;
+
+            // Basic overlay
+            sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, vp.Height), new Color(16, 16, 20));
+
+            float y = 90;
+            float lineH = 30;
+            foreach (var (text, selected) in _highScoresScreen.GetLines(vp))
+            {
+                DrawCenteredText(sb, vp, text, y, selected ? Color.White : new Color(210, 210, 220));
+                y += lineH;
+            }
+            return;
+        }
+
+        if (_mode == WorldMode.NameEntry)
+        {
+            if (_hudFont == null || _nameEntryScreen == null)
+                return;
+
+            sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, vp.Height), new Color(16, 16, 20));
+
+            float y = 90;
+            float lineH = 30;
+            foreach (var (text, selected) in _nameEntryScreen.GetLines(vp))
+            {
+                DrawCenteredText(sb, vp, text, y, selected ? Color.White : new Color(210, 210, 220));
+                y += lineH;
+            }
+            return;
+        }
+
+        if (_mode == WorldMode.GameOver)
+        {
+            if (_hudFont == null || _gameOverScreen == null)
+                return;
+
+            sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, vp.Height), new Color(16, 16, 20));
+
+            float y = 90;
+            float lineH = 30;
+            foreach (var (text, selected) in _gameOverScreen.GetLines(vp))
+            {
+                DrawCenteredText(sb, vp, text, y, selected ? Color.White : new Color(210, 210, 220));
+                y += lineH;
+            }
+            return;
+        }
+
         // In-game HUD + top bar.
         DrawHud(sb, vp);
 
@@ -1595,6 +1776,10 @@ public sealed class BreakoutWorld
             {
                 OpenSettings();
             }
+            else if (_menuItem == MenuItem.HighScores)
+            {
+                ShowHighScores(WorldMode.Menu);
+            }
             else
             {
                 _menuItem = MenuItem.Start;
@@ -1637,6 +1822,8 @@ public sealed class BreakoutWorld
                 break;
             case MenuItem.Difficulty:
                 _selectedPresetIndex = Math.Clamp(_selectedPresetIndex + dir, 0, Presets.Length - 1);
+                // Keep derived difficulty in sync so High Scores reflects the selection immediately.
+                _selectedDifficultyId = PresetIndexToDifficulty(_selectedPresetIndex);
                 break;
         }
     }
@@ -1728,16 +1915,14 @@ public sealed class BreakoutWorld
             dir -= 1;
             _settingsLeftConsumed = true;
         }
-        if (!leftHeld)
-            _settingsLeftConsumed = false;
+        if (!leftHeld) _settingsLeftConsumed = false;
 
         if (rightHeld && !_settingsRightConsumed)
         {
             dir += 1;
             _settingsRightConsumed = true;
         }
-        if (!rightHeld)
-            _settingsRightConsumed = false;
+        if (!rightHeld) _settingsRightConsumed = false;
 
         if (dir != 0)
             AdjustSettingsValue(dir);
@@ -1967,7 +2152,30 @@ public sealed class BreakoutWorld
 
         if (!anyAlive)
         {
-            _mode = WorldMode.Menu;
+            int score = _scoreByPlayer.Count > 0 ? _scoreByPlayer[0] : 0;
+            int seed = _settings?.Current?.Gameplay?.LevelSeed ?? 0;
+
+            if (_highscores != null && _nameEntryScreen != null)
+            {
+                // Only prompt for name if this score would make the local leaderboard.
+                var probe = HighScoreEntry.Create("PLAYER", score, CurrentModeId, _selectedDifficultyId, _levelIndex, seed);
+                if (_highscores.WouldQualify(probe))
+                {
+                    _nameEntryScreen.Show(playerIndex: 0, score, CurrentModeId, _selectedDifficultyId, _levelIndex, seed);
+                    _mode = WorldMode.NameEntry;
+                    return;
+                }
+            }
+
+            if (_gameOverScreen != null)
+            {
+                _gameOverScreen.Show(score, CurrentModeId, _selectedDifficultyId, _levelIndex, seed, showSavedMessage: false);
+                _mode = WorldMode.GameOver;
+            }
+            else
+            {
+                _mode = WorldMode.Menu;
+            }
             return;
         }
 
@@ -2060,7 +2268,7 @@ public sealed class BreakoutWorld
         }
     }
 
-    private void HandlePaddleCollision(int ballIndex, DragonBreakInput[] inputs, Viewport playfield)
+    private void HandlePaddleCollision(int ballIndex, DragonBreakInput[]? inputs, Viewport playfield)
     {
         if ((uint)ballIndex >= (uint)_balls.Count) return;
 

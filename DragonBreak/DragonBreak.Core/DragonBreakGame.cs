@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Globalization;
 using DragonBreak.Core.Breakout;
+using DragonBreak.Core.Highscores;
 using DragonBreak.Core.Input;
 using DragonBreak.Core.Localization;
 using DragonBreak.Core.Settings;
@@ -32,6 +33,7 @@ namespace DragonBreak.Core
         private readonly SettingsManager _settings;
         private readonly DisplayModeService _displayModes;
         private readonly AudioService _audio;
+        private readonly HighScoreService _highscores;
 
         /// <summary>
         /// Indicates if the game is running on a mobile platform.
@@ -61,9 +63,13 @@ namespace DragonBreak.Core
             _displayModes = new DisplayModeService();
             _audio = new AudioService();
 
+            // Highscores (local JSON for now)
+            _highscores = new HighScoreService(new JsonHighScoreStore("DragonBreak"));
+
             Services.AddService(typeof(SettingsManager), _settings);
             Services.AddService(typeof(DisplayModeService), _displayModes);
             Services.AddService(typeof(AudioService), _audio);
+            Services.AddService(typeof(HighScoreService), _highscores);
 
             _settings.SettingsApplied += ApplySettings;
 
@@ -92,6 +98,9 @@ namespace DragonBreak.Core
         {
             // Apply settings as early as possible.
             ApplySettings(_settings.Current);
+
+            // Forward text input (keyboard typing) to the world for name entry.
+            Window.TextInput += (_, e) => _world.OnTextInput(e.Character);
 
             base.Initialize();
 

@@ -137,10 +137,10 @@ public sealed class InputMapper
                                   || _prevKeyboard.IsKeyDown(Keys.Space)
                                   || (prevPad.IsConnected && prevPad.Buttons.A == ButtonState.Pressed);
 
-        // Back: Escape/B/Back
-        bool menuBackDown = keyboard.IsKeyDown(Keys.Back) || keyboard.IsKeyDown(Keys.Escape)
+        // Back: Escape/B/Back (NOT Backspace; Backspace is used for text editing in name entry)
+        bool menuBackDown = keyboard.IsKeyDown(Keys.Escape)
                             || (pad.IsConnected && (pad.Buttons.B == ButtonState.Pressed || pad.Buttons.Back == ButtonState.Pressed));
-        bool menuBackWasDown = _prevKeyboard.IsKeyDown(Keys.Back) || _prevKeyboard.IsKeyDown(Keys.Escape)
+        bool menuBackWasDown = _prevKeyboard.IsKeyDown(Keys.Escape)
                                || (prevPad.IsConnected && (prevPad.Buttons.B == ButtonState.Pressed || prevPad.Buttons.Back == ButtonState.Pressed));
 
         var state = new DragonBreakInput(

@@ -13,6 +13,7 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
         None,
         Resume,
         RestartLevel,
+        HighScores,
         MainMenu,
     }
 
@@ -55,7 +56,7 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
         bool upHeld = upHeldAny || menuY >= deadzone;
         bool downHeld = downHeldAny || menuY <= -deadzone;
 
-        const int itemCount = 3;
+        const int itemCount = 4;
 
         if (upHeld && !_upConsumed)
         {
@@ -83,7 +84,8 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
             {
                 0 => PauseAction.Resume,
                 1 => PauseAction.RestartLevel,
-                2 => PauseAction.MainMenu,
+                2 => PauseAction.HighScores,
+                3 => PauseAction.MainMenu,
                 _ => PauseAction.Resume,
             };
         }
@@ -98,6 +100,7 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
     {
         yield return ("Resume", _selectedIndex == 0);
         yield return ("Restart Level", _selectedIndex == 1);
-        yield return ("Main Menu", _selectedIndex == 2);
+        yield return ("High Scores", _selectedIndex == 2);
+        yield return ("Main Menu", _selectedIndex == 3);
     }
 }

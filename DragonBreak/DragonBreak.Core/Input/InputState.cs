@@ -25,7 +25,7 @@ public readonly struct DragonBreakInput
 
     public bool MenuLeftHeld { get; }
     public bool MenuRightHeld { get; }
-
+    
     public float MenuMoveX { get; }
     public float MenuMoveY { get; }
 

@@ -7,6 +7,9 @@ public sealed record GameplaySettings
 {
     public DifficultyId Difficulty { get; init; } = DifficultyId.Normal;
 
+    // When enabled, activates extra testing controls (e.g., skip/complete level).
+    public bool DebugMode { get; init; } = false;
+
     /// <summary>
     /// Seed used for procedural level generation.
     /// Same seed + level + difficulty => same brick layout.
@@ -29,6 +32,7 @@ public sealed record GameplaySettings
     public static GameplaySettings Default => new()
     {
         Difficulty = DifficultyId.Normal,
+        DebugMode = false,
         LevelSeed = 1337,
         ContinueMode = ContinueMode.PromptThenAuto,
         AutoContinueSeconds = 2.5f,
@@ -56,6 +60,8 @@ public sealed record GameplaySettings
             AutoContinueSeconds = secs,
             LevelSeed = seed,
             PowerUpDrops = drops,
+            // DebugMode is a simple bool; preserve as-is.
+            DebugMode = DebugMode,
         };
     }
 }

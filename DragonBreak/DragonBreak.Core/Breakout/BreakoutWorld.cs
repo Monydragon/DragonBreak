@@ -11,12 +11,17 @@ using DragonBreak.Core.Highscores;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Content;
 using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
 
 namespace DragonBreak.Core.Breakout;
 
 public sealed partial class BreakoutWorld
 {
     private readonly Random _rng = new();
+
+    // Track prior raw input for debug-only combos (separate from InputMapper).
+    private KeyboardState _prevDebugKeyboard;
+    private readonly GamePadState[] _prevDebugPadByPlayer = new GamePadState[4];
 
     private Texture2D _pixel = null!;
     private SpriteFont? _hudFont;
@@ -276,6 +281,8 @@ public sealed partial class BreakoutWorld
         LevelSeedRandomize,
         LevelSeedReset,
 
+        DebugMode,
+
         Apply,
         Cancel,
     }
@@ -302,6 +309,7 @@ public sealed partial class BreakoutWorld
         SettingsItem.LevelSeed,
         SettingsItem.LevelSeedRandomize,
         SettingsItem.LevelSeedReset,
+        SettingsItem.DebugMode,
         SettingsItem.Apply,
         SettingsItem.Cancel,
     ];
@@ -781,8 +789,49 @@ public sealed partial class BreakoutWorld
         // Gameplay uses the playfield viewport (below the HUD bar).
         var playfield = GetPlayfieldViewport(vp);
 
+        // Debug: instantly clear the level (testing aid).
+        // Require a deliberate combo so normal play inputs can't accidentally skip:
+        // - Keyboard: Shift + Enter
+        // - Gamepad: Start + A
+        bool debug = (_settings?.Current.Gameplay ?? GameplaySettings.Default).DebugMode;
+        if (debug)
+        {
+            var keyboard = Keyboard.GetState();
+
+            bool shiftHeld = keyboard.IsKeyDown(Keys.LeftShift) || keyboard.IsKeyDown(Keys.RightShift);
+            bool enterDown = keyboard.IsKeyDown(Keys.Enter);
+            bool enterWasDown = _prevDebugKeyboard.IsKeyDown(Keys.Enter);
+            bool shiftEnterPressed = shiftHeld && enterDown && !enterWasDown;
+
+            bool startAPressed = false;
+            for (int p = 0; p < 4; p++)
+            {
+                var pad = GamePad.GetState((PlayerIndex)p);
+                var prevPad = _prevDebugPadByPlayer[p];
+
+                bool startHeld = pad.IsConnected && pad.Buttons.Start == ButtonState.Pressed;
+                bool aDown = pad.IsConnected && pad.Buttons.A == ButtonState.Pressed;
+                bool aWasDown = prevPad.IsConnected && prevPad.Buttons.A == ButtonState.Pressed;
+
+                if (startHeld && aDown && !aWasDown)
+                {
+                    startAPressed = true;
+                }
+
+                _prevDebugPadByPlayer[p] = pad;
+            }
+
+            _prevDebugKeyboard = keyboard;
+
+            if (shiftEnterPressed || startAPressed)
+            {
+                OnLevelCleared(vp);
+                return;
+            }
+        }
+
         // Allow pausing during gameplay.
-        if (AnyPausePressed(inputs))
+        if (inputs != null && AnyPausePressed(inputs))
         {
             EnterPaused();
             return;
@@ -827,7 +876,7 @@ public sealed partial class BreakoutWorld
         ApplyPaddleSize(playfield);
 
         float maxY = playfield.Height - PaddleBottomPaddingPixels;
-        float minY = Math.Max(0f, playfield.Height * PaddleMaxUpScreenFraction);
+        float minY = GetPaddleMinY(playfield);
 
         // Safety for small windows: ensure a valid clamp range so paddles can still move.
         if (maxY < minY)
@@ -1458,6 +1507,32 @@ public sealed partial class BreakoutWorld
         }
     }
 
+    private float GetPaddleMinY(Viewport playfield)
+    {
+        // Old behavior: allow paddles up to a fixed fraction of the playfield.
+        float minY = Math.Max(0f, playfield.Height * PaddleMaxUpScreenFraction);
+
+        // New behavior: never allow paddles to overlap the brick field.
+        // Bricks/paddles are simulated in playfield-local coordinates, so this is safe.
+        int maxBrickBottom = -1;
+        for (int i = 0; i < _bricks.Count; i++)
+        {
+            if (!_bricks[i].IsAlive) continue;
+            maxBrickBottom = Math.Max(maxBrickBottom, _bricks[i].Bounds.Bottom);
+        }
+
+        if (maxBrickBottom >= 0)
+        {
+            // Keep some breathing room below the last (lowest) brick row.
+            const int pad = 10;
+            minY = Math.Max(minY, maxBrickBottom + pad);
+        }
+
+        // Ensure minY doesn't push the paddle out of bounds in tiny windows.
+        minY = MathHelper.Clamp(minY, 0f, Math.Max(0f, playfield.Height - _basePaddleSize.Y));
+        return minY;
+    }
+
     private void HandleWallCollisions(Viewport vp, Ball ball)
     {
         if (ball.Position.X - ball.Radius <= 0f)
@@ -1599,18 +1674,36 @@ public sealed partial class BreakoutWorld
 
     private static Color[] PaletteForHp(int hp)
     {
-        // Palette from "tough" -> "weak".
-        return hp switch
+        // Palette is ordered from "tough" -> "weak".
+        // Requested mapping by remaining hits:
+        // 1=White, 2=Red, 3=Orange, 4=Purple, 5=Green, 6=Cyan, 7=Pink, 8=Violet.
+        // Since the palette is "toughest -> weakest", we build arrays from hp down to 1.
+        static Color HpColor(int remainingHp)
         {
-            1 => [new Color(80, 210, 120)],
-            2 => [new Color(80, 120, 240), new Color(80, 210, 120)],
-            3 => [new Color(150, 80, 230), new Color(80, 120, 240), new Color(80, 210, 120)],
-            4 => [new Color(230, 80, 160), new Color(150, 80, 230), new Color(80, 120, 240), new Color(80, 210, 120)],
-            5 => [new Color(240, 90, 80), new Color(230, 80, 160), new Color(150, 80, 230), new Color(80, 120, 240), new Color(80, 210, 120)],
-            6 => [new Color(240, 140, 70), new Color(240, 90, 80), new Color(230, 80, 160), new Color(150, 80, 230), new Color(80, 120, 240), new Color(80, 210, 120)],
-            7 => [new Color(250, 200, 80), new Color(240, 140, 70), new Color(240, 90, 80), new Color(230, 80, 160), new Color(150, 80, 230), new Color(80, 120, 240), new Color(80, 210, 120)],
-            _ => [new Color(250, 240, 120), new Color(250, 200, 80), new Color(240, 140, 70), new Color(240, 90, 80), new Color(230, 80, 160), new Color(150, 80, 230), new Color(80, 120, 240), new Color(80, 210, 120)],
-        };
+            return remainingHp switch
+            {
+                1 => Color.White,
+                2 => Color.Red,
+                3 => Color.Orange,
+                4 => Color.Purple,
+                5 => Color.Green,
+                6 => Color.Cyan,
+                7 => Color.HotPink,
+                // MonoGame/XNA doesn’t have a named "Violet" in the standard Color set.
+                // Use a close preset-ish violet tone.
+                _ => new Color(143, 0, 255),
+            };
+        }
+
+        int clamped = Math.Clamp(hp, 1, 8);
+        var palette = new Color[clamped];
+        for (int i = 0; i < palette.Length; i++)
+        {
+            int remaining = clamped - i;
+            palette[i] = HpColor(remaining);
+        }
+
+        return palette;
     }
 
     private string SafeText(string text)
@@ -1679,7 +1772,14 @@ public sealed partial class BreakoutWorld
         int brickH = Math.Clamp((int)MathF.Round(brickW * 0.48f), 16, 30);
 
         int maxRowsByHeight = Math.Max(1, (availH + padding) / (brickH + padding));
-        int rows = Math.Clamp(4 + levelIndex / 2, 4, Math.Min(13, maxRowsByHeight));
+
+        // Rows: slower early escalation + clearer tier steps.
+        // LevelIndex is 0-based, so 0..9 are the first 10 levels.
+        int tierIndex = Math.Max(0, levelIndex / 10);
+        int rowsBase = 4;
+        int rowsEarly = Math.Min(2, levelIndex / 3);         // 0..9 => +0..2
+        int rowsTier = Math.Min(6, tierIndex * 2);           // 0,2,4,6... (clamped)
+        int rows = Math.Clamp(rowsBase + rowsEarly + rowsTier, 4, Math.Min(13, maxRowsByHeight));
 
         // Recompute capacity based on rows/cols and some safety.
         int capacity = Math.Max(1, rows * cols);
@@ -1694,19 +1794,68 @@ public sealed partial class BreakoutWorld
         int difficultyIndex = Math.Clamp(DifficultyToPresetIndex(_selectedDifficultyId), 0, Presets.Length - 1);
         float difficultyT = difficultyIndex / (float)Math.Max(1, Presets.Length - 1);
 
-        // Target bricks: odd ramp (3,5,7,...) but limited by capacity.
-        int baseTarget = 3 + levelIndex * 2;
+        // Target bricks: slower early ramp + tier jumps, but still capped by capacity.
+        // Keep odd so layouts tend to look centered.
+        int baseTarget = 5 + levelIndex;                      // slower than old (was 3 + levelIndex*2)
+        int tierTargetJump = tierIndex * 8;                   // noticeable change every 10 levels
         int bonus = (int)MathF.Round(difficultyT * Math.Min(10, levelIndex));
-        int target = baseTarget + bonus;
-        if ((target & 1) == 0) target++; // keep odd
+        int target = baseTarget + tierTargetJump + bonus;
+        if ((target & 1) == 0) target++;
 
-        // Avoid filling the whole board: keep at most ~80% density.
-        int maxTarget = (int)MathF.Floor(capacity * 0.80f);
+        // Avoid filling the whole board: keep at most ~75% density (slightly looser early feel).
+        int maxTarget = (int)MathF.Floor(capacity * 0.75f);
         target = Math.Clamp(target, 1, Math.Max(1, maxTarget));
 
-        // HP ramps slower; use preset cap.
-        int baseHp = 1 + levelIndex / 3;
-        baseHp = Math.Min(baseHp, _preset.MaxBrickHp);
+        // --- HP tiers (every 10 levels) ---
+        // Option C: same tier unlocks across difficulties, but distribution shifts with difficulty.
+        // Levels 0..9 => only 1HP bricks.
+        int unlockedHpMax = Math.Clamp(1 + tierIndex, 1, _preset.MaxBrickHp);
+
+        // Weighted random selection so not all bricks sit at the tier cap.
+        // Returns an HP in [1..unlockedHpMax].
+        int RollBrickHp(int rowIndex)
+        {
+            if (unlockedHpMax <= 1)
+                return 1;
+
+            // A tiny upward bias for higher rows, but much gentler than the old r/3 step.
+            // This keeps tops a bit tougher without feeling like a sudden ramp.
+            float rowT = rows <= 1 ? 0f : rowIndex / (float)(rows - 1);
+
+            // Difficulty bias: on harder modes, the upper end shows up a bit more often.
+            // difficultyT in [0..1]
+            float hardBias = 0.10f + 0.20f * difficultyT; // 0.10..0.30
+
+            // Tier bias: in later tiers, allow the cap to appear a little more often.
+            float tierBias = 0.08f * tierIndex; // grows slowly
+
+            // Base probabilities: heavily favor low HP; allow some mid; rare cap.
+            // We build weights for 1..unlockedHpMax.
+            // Weight formula: w(h) = exp(-k*(h-1)) with k varying by difficulty/tier/row.
+            float k = 1.35f - (hardBias + tierBias + rowT * 0.20f); // smaller k => more high HP
+            k = MathHelper.Clamp(k, 0.55f, 1.35f);
+
+            float total = 0f;
+            Span<float> weights = stackalloc float[9]; // supports hp up to 8 comfortably
+            int max = Math.Min(unlockedHpMax, 8);
+            for (int h = 1; h <= max; h++)
+            {
+                float w = MathF.Exp(-k * (h - 1));
+                weights[h] = w;
+                total += w;
+            }
+
+            float pick = (float)rng.NextDouble() * total;
+            float acc = 0f;
+            for (int h = 1; h <= max; h++)
+            {
+                acc += weights[h];
+                if (pick <= acc)
+                    return h;
+            }
+
+            return max;
+        }
 
         // --- Generate an occupancy grid (complex shapes) ---
         // We'll build a boolean grid of [rows, cols], then instantiate bricks.
@@ -1747,15 +1896,12 @@ public sealed partial class BreakoutWorld
                 FillOrganic(occ, rows, cols, remaining, rng);
         }
 
-        // Instantiate bricks; apply per-row HP bias but stay inside difficulty bounds.
+        // Instantiate bricks; pick per-brick HP with gentle row bias, capped by tier + difficulty.
         int startX = sideMargin;
         int startY = topMargin;
 
         for (int r = 0; r < rows; r++)
         {
-            int rowBonus = r / 3;
-            int brickHp = Math.Min(baseHp + rowBonus, _preset.MaxBrickHp);
-
             for (int c = 0; c < cols; c++)
             {
                 if (!occ[r, c])
@@ -1769,6 +1915,8 @@ public sealed partial class BreakoutWorld
                 if (y < topMargin || y + brickH > vp.Height - bottomMargin) continue;
 
                 var bounds = new Rectangle(x, y, brickW, brickH);
+
+                int brickHp = RollBrickHp(r);
 
                 if (IsOwnedBricksMode)
                 {
@@ -1795,10 +1943,11 @@ public sealed partial class BreakoutWorld
         if (_bricks.Count == 0)
         {
             var bounds = new Rectangle(sideMargin, topMargin, brickW, brickH);
+            int brickHp = 1;
             if (IsOwnedBricksMode)
-                _bricks.Add(new Brick(bounds, baseHp, PaletteForHpOwned(baseHp, 0), ownerPlayerIndex: 0));
+                _bricks.Add(new Brick(bounds, brickHp, PaletteForHpOwned(brickHp, 0), ownerPlayerIndex: 0));
             else
-                _bricks.Add(new Brick(bounds, baseHp, PaletteForHp(baseHp)));
+                _bricks.Add(new Brick(bounds, brickHp, PaletteForHp(brickHp)));
         }
     }
 
@@ -2444,6 +2593,12 @@ public sealed partial class BreakoutWorld
                 pending = pending with { Gameplay = g with { LevelSeed = GameplaySettings.Default.LevelSeed } };
                 _settings?.SetPending(pending);
             }
+            else if (_settingsItem == SettingsItem.DebugMode)
+            {
+                var g = pending.Gameplay;
+                pending = pending with { Gameplay = g with { DebugMode = !g.DebugMode } };
+                _settings?.SetPending(pending);
+            }
         }
     }
 
@@ -2509,6 +2664,10 @@ public sealed partial class BreakoutWorld
 
             case SettingsItem.LevelSeed:
                 pending = pending with { Gameplay = gameplay with { LevelSeed = StepInt(gameplay.LevelSeed, 1, -1_000_000_000, 1_000_000_000, dir) } };
+                break;
+
+            case SettingsItem.DebugMode:
+                pending = pending with { Gameplay = gameplay with { DebugMode = !gameplay.DebugMode } };
                 break;
 
             // Note: WindowMode/Resolution are intentionally left as display-only in this simplified UI.
@@ -2699,7 +2858,52 @@ public sealed partial class BreakoutWorld
         for (int i = 0; i < _bricks.Count; i++)
         {
             if (!_bricks[i].IsAlive) continue;
-            sb.Draw(_pixel, _bricks[i].Bounds, Color.White);
+
+            // Color reflects remaining hits.
+            sb.Draw(_pixel, _bricks[i].Bounds, _bricks[i].CurrentColor);
+
+            // Show remaining hits-to-break for multi-hit bricks.
+            // Requirements: no text for 1-hit bricks; show number for 2+.
+            if (_hudFont != null && _bricks[i].HitPoints >= 2)
+            {
+                string hpText = _bricks[i].HitPoints.ToString();
+                hpText = SafeText(hpText);
+
+                // A small scale so it fits inside the brick even on smaller screens.
+                float textScale = 0.75f;
+                var size = _hudFont.MeasureString(hpText) * textScale;
+
+                var b = _bricks[i].Bounds;
+                float x = b.X + (b.Width - size.X) * 0.5f;
+                float y = b.Y + (b.Height - size.Y) * 0.5f;
+
+                // High-contrast, "bold" text: warm fill + thick dark outline.
+                // We keep the fill warm (yellow/orange), but if the brick is very bright (e.g., near-white),
+                // switch to a darker fill so it remains readable.
+                Color fill = new Color(255, 210, 70); // warm yellow
+                Color outline = Color.Black * 0.90f;
+
+                // If the brick is extremely bright, a darker fill reads better.
+                var bc = _bricks[i].CurrentColor;
+                int luma = (bc.R * 299 + bc.G * 587 + bc.B * 114) / 1000;
+                if (luma > 220)
+                    fill = new Color(60, 40, 20);
+
+                var pos = new Vector2(x, y);
+
+                // 8-way outline (1px) for visibility.
+                sb.DrawString(_hudFont, hpText, pos + new Vector2(-1, 0), outline, 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
+                sb.DrawString(_hudFont, hpText, pos + new Vector2(1, 0), outline, 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
+                sb.DrawString(_hudFont, hpText, pos + new Vector2(0, -1), outline, 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
+                sb.DrawString(_hudFont, hpText, pos + new Vector2(0, 1), outline, 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
+                sb.DrawString(_hudFont, hpText, pos + new Vector2(-1, -1), outline, 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
+                sb.DrawString(_hudFont, hpText, pos + new Vector2(-1, 1), outline, 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
+                sb.DrawString(_hudFont, hpText, pos + new Vector2(1, -1), outline, 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
+                sb.DrawString(_hudFont, hpText, pos + new Vector2(1, 1), outline, 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
+
+                // Main pass.
+                sb.DrawString(_hudFont, hpText, pos, fill, 0f, Vector2.Zero, textScale, SpriteEffects.None, 0f);
+            }
         }
 
         // Paddles
@@ -2798,6 +3002,7 @@ public sealed partial class BreakoutWorld
                 ($"Level Seed: {gameplay.LevelSeed}", _settingsItem == SettingsItem.LevelSeed),
                 ("Level Seed: Randomize", _settingsItem == SettingsItem.LevelSeedRandomize),
                 ("Level Seed: Reset", _settingsItem == SettingsItem.LevelSeedReset),
+                ($"Debug Mode: {(gameplay.DebugMode ? "On" : "Off")}", _settingsItem == SettingsItem.DebugMode),
                 ("Apply", _settingsItem == SettingsItem.Apply),
                 ("Cancel", _settingsItem == SettingsItem.Cancel),
             };

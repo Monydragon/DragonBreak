@@ -24,6 +24,8 @@ internal sealed class NameEntryScreen : IBreakoutScreen
     private DifficultyId _difficulty;
     private int _levelReached;
     private int _seed;
+    private int _playerCount = 1;
+    private bool _isTeamEntry;
 
     private string _name = string.Empty;
 
@@ -47,6 +49,29 @@ internal sealed class NameEntryScreen : IBreakoutScreen
         _levelReached = Math.Max(0, levelReached);
         _seed = seed;
 
+        _playerCount = 1;
+        _isTeamEntry = false;
+
+        _name = string.Empty;
+        _pickerIndex = 0;
+
+        _pending = NameEntryAction.None;
+
+        _leftConsumed = _rightConsumed = _upConsumed = _downConsumed = false;
+    }
+
+    public void ShowTeam(int teamScore, GameModeId mode, DifficultyId difficulty, int levelReached, int seed, int playerCount)
+    {
+        _playerIndex = 0;
+        _finalScore = Math.Max(0, teamScore);
+        _mode = mode;
+        _difficulty = difficulty;
+        _levelReached = Math.Max(0, levelReached);
+        _seed = seed;
+
+        _playerCount = Math.Max(1, playerCount);
+        _isTeamEntry = true;
+
         _name = string.Empty;
         _pickerIndex = 0;
 
@@ -58,14 +83,17 @@ internal sealed class NameEntryScreen : IBreakoutScreen
     public string GetSubmittedName()
     {
         var trimmed = _name.Trim();
-        if (string.IsNullOrWhiteSpace(trimmed))
-            return $"PLAYER {_playerIndex + 1}";
+        if (!string.IsNullOrWhiteSpace(trimmed))
+            return trimmed;
 
-        return trimmed;
+        if (_isTeamEntry)
+            return $"TEAM ({_playerCount}P)";
+
+        return $"PLAYER {_playerIndex + 1}";
     }
 
-    public (int FinalScore, GameModeId Mode, DifficultyId Difficulty, int LevelReached, int Seed, int PlayerIndex) GetContext()
-        => (_finalScore, _mode, _difficulty, _levelReached, _seed, _playerIndex);
+    public (int FinalScore, GameModeId Mode, DifficultyId Difficulty, int LevelReached, int Seed, int PlayerIndex, int PlayerCount, bool IsTeamEntry) GetContext()
+        => (_finalScore, _mode, _difficulty, _levelReached, _seed, _playerIndex, _playerCount, _isTeamEntry);
 
     public NameEntryAction ConsumeAction()
     {
@@ -211,15 +239,24 @@ internal sealed class NameEntryScreen : IBreakoutScreen
 
     public IEnumerable<(string Text, bool Selected)> GetLines(Viewport vp)
     {
-        yield return ("ENTER YOUR NAME", false);
+        string title = _isTeamEntry ? "ENTER TEAM NAME" : "ENTER YOUR NAME";
+        yield return (title, false);
         yield return ($"MODE: {_mode}   DIFF: {_difficulty}", false);
-        yield return ($"SCORE: {_finalScore,7}   LEVEL: {_levelReached + 1}", false);
+
+        string scoreLine = _isTeamEntry
+            ? $"TEAM SCORE: {_finalScore,7}   LEVEL: {_levelReached + 1}"
+            : $"SCORE: {_finalScore,7}   LEVEL: {_levelReached + 1}";
+        yield return (scoreLine, false);
+
+        if (_isTeamEntry)
+            yield return ($"PLAYERS: {_playerCount}P", false);
+
         yield return ("", false);
 
         // Inline fixed-width field with cursor; shows exactly what will be submitted.
         string shown = _name;
         if (string.IsNullOrWhiteSpace(shown))
-            shown = $"PLAYER {_playerIndex + 1}";
+            shown = _isTeamEntry ? $"TEAM ({_playerCount}P)" : $"PLAYER {_playerIndex + 1}";
 
         string cursor = _name.Length < NameMaxLen ? "_" : "";
         yield return ($"> {shown}{cursor}", false);

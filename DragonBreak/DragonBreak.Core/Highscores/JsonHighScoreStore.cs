@@ -86,7 +86,7 @@ public sealed class JsonHighScoreStore : IHighScoreStore
 
 public sealed record HighScoreDatabase
 {
-    public int SchemaVersion { get; init; } = 1;
+    public int SchemaVersion { get; init; } = 2;
     public HighScoreSettings Settings { get; init; } = HighScoreSettings.Default;
 
     /// <summary>
@@ -97,7 +97,7 @@ public sealed record HighScoreDatabase
     public static HighScoreDatabase CreateDefault()
         => new()
         {
-            SchemaVersion = 1,
+            SchemaVersion = 2,
             Settings = HighScoreSettings.Default,
             Tables = new Dictionary<string, List<HighScoreEntry>>(StringComparer.OrdinalIgnoreCase),
         };
@@ -129,6 +129,7 @@ public sealed record HighScoreDatabase
                     Name = name,
                     Score = Math.Max(0, e.Score),
                     LevelReached = Math.Max(0, e.LevelReached),
+                    PlayerCount = Math.Clamp(e.PlayerCount <= 0 ? 1 : e.PlayerCount, 1, 4),
                 });
             }
 
@@ -151,7 +152,7 @@ public sealed record HighScoreDatabase
 
         return this with
         {
-            SchemaVersion = 1,
+            SchemaVersion = 2,
             Settings = validatedSettings,
             Tables = outTables,
         };

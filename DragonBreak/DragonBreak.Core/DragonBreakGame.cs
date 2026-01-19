@@ -195,6 +195,8 @@ namespace DragonBreak.Core
             GraphicsDevice.Clear(Color.Black);
 
             var full = GraphicsDevice.Viewport;
+
+            // Keep in sync with BreakoutWorld's HUD bar height.
             int hudH = Math.Clamp(96, 0, Math.Max(0, full.Height - 1));
             var playfieldRect = new Rectangle(full.X, full.Y + hudH, full.Width, Math.Max(1, full.Height - hudH));
 
@@ -202,9 +204,14 @@ namespace DragonBreak.Core
             var prevScissor = GraphicsDevice.ScissorRectangle;
             GraphicsDevice.ScissorRectangle = playfieldRect;
 
+            // Translate the gameplay coordinate system so (0,0) is the top-left of the playfield.
+            // Without this, gameplay is drawn at y=0 and can appear to overlap the HUD region.
+            var gameplayTransform = Matrix.CreateTranslation(0f, hudH, 0f);
+
             _spriteBatch.Begin(
                 samplerState: SamplerState.PointClamp,
-                rasterizerState: RasterScissorOn);
+                rasterizerState: RasterScissorOn,
+                transformMatrix: gameplayTransform);
 
             _world.Draw(_spriteBatch, full);
             _spriteBatch.End();
@@ -213,7 +220,6 @@ namespace DragonBreak.Core
             GraphicsDevice.ScissorRectangle = prevScissor;
 
             // Pass 2: UI (HUD/top bar/menus) un-clipped.
-            // This ensures the top black bar + HUD can render above the playfield.
             _spriteBatch.Begin(
                 samplerState: SamplerState.PointClamp,
                 rasterizerState: RasterScissorOff);

@@ -19,6 +19,7 @@ public sealed record HighScoreEntry
 {
     public string Name { get; init; } = "";
     public int Score { get; init; }
+    public int PlayerCount { get; init; } = 1;
     public DateTimeOffset Timestamp { get; init; } = DateTimeOffset.UtcNow;
 
     public GameModeId Mode { get; init; } = GameModeId.Arcade;
@@ -29,11 +30,12 @@ public sealed record HighScoreEntry
 
     public HighScoreKey Key => new(Mode, Difficulty);
 
-    public static HighScoreEntry Create(string name, int score, GameModeId mode, DifficultyId difficulty, int levelReached, int seed)
+    public static HighScoreEntry Create(string name, int score, GameModeId mode, DifficultyId difficulty, int levelReached, int seed, int playerCount = 1)
         => new()
         {
             Name = name ?? "",
             Score = score,
+            PlayerCount = Math.Max(1, playerCount),
             Timestamp = DateTimeOffset.UtcNow,
             Mode = mode,
             Difficulty = difficulty,
@@ -54,4 +56,3 @@ public sealed record HighScoreSettings
             MaxEntriesPerKey = Math.Clamp(MaxEntriesPerKey, 3, 200),
         };
 }
-

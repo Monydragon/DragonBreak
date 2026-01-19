@@ -55,6 +55,10 @@ internal sealed class HighScoresScreen : IBreakoutScreen
 
     public void Update(DragonBreakInput[] inputs, Viewport vp, float dtSeconds)
     {
+        // Defensive: some callers may pass an empty input array.
+        if (inputs.Length == 0)
+            inputs = Array.Empty<DragonBreakInput>();
+
         bool backPressed = false;
         bool upHeldAny = false;
         bool downHeldAny = false;
@@ -91,11 +95,21 @@ internal sealed class HighScoresScreen : IBreakoutScreen
 
         var scores = _service.GetTop(_mode, _difficulty);
         int count = scores.Count;
-        if (count == 0) _selectedIndex = 0;
-        else _selectedIndex = Math.Clamp(_selectedIndex, 0, count - 1);
 
         // Visible lines: keep some margin for title and footer.
         int visible = Math.Max(3, (vp.Height - 220) / 28);
+
+        // Clamp selection and scroll safely even if the score list size changed.
+        if (count <= 0)
+        {
+            _selectedIndex = 0;
+            _scrollOffset = 0;
+        }
+        else
+        {
+            _selectedIndex = Math.Clamp(_selectedIndex, 0, count - 1);
+            _scrollOffset = Math.Clamp(_scrollOffset, 0, Math.Max(0, count - visible));
+        }
 
         if (upHeld && !_upConsumed)
         {
@@ -126,12 +140,23 @@ internal sealed class HighScoresScreen : IBreakoutScreen
         if (!pageDownPressed) _pageDownConsumed = false;
 
         // Keep selection in view.
-        if (_selectedIndex < _scrollOffset)
-            _scrollOffset = _selectedIndex;
-        if (_selectedIndex >= _scrollOffset + visible)
-            _scrollOffset = _selectedIndex - visible + 1;
+        if (count > 0)
+        {
+            // Re-clamp after applying navigation.
+            _selectedIndex = Math.Clamp(_selectedIndex, 0, count - 1);
 
-        _scrollOffset = Math.Clamp(_scrollOffset, 0, Math.Max(0, count - visible));
+            if (_selectedIndex < _scrollOffset)
+                _scrollOffset = _selectedIndex;
+            if (_selectedIndex >= _scrollOffset + visible)
+                _scrollOffset = _selectedIndex - visible + 1;
+
+            _scrollOffset = Math.Clamp(_scrollOffset, 0, Math.Max(0, count - visible));
+        }
+        else
+        {
+            _selectedIndex = 0;
+            _scrollOffset = 0;
+        }
 
         if (backPressed)
             _pendingAction = HighScoresAction.Back;
@@ -159,15 +184,20 @@ internal sealed class HighScoresScreen : IBreakoutScreen
         }
 
         int visible = Math.Max(3, (vp.Height - 220) / 28);
-        int start = _scrollOffset;
-        int end = Math.Min(scores.Count, start + visible);
+
+        // Defensive clamp in case Update wasn't called yet or score list changed between frames.
+        int count = scores.Count;
+        int sel = Math.Clamp(_selectedIndex, 0, count - 1);
+        int start = Math.Clamp(_scrollOffset, 0, Math.Max(0, count - visible));
+        int end = Math.Min(count, start + visible);
 
         for (int i = start; i < end; i++)
         {
             var e = scores[i];
             string name = string.IsNullOrWhiteSpace(e.Name) ? "PLAYER" : e.Name;
-            string line = $"{i + 1,2}. {name,-12}  {e.Score,7}  L{e.LevelReached + 1}";
-            yield return (line, i == _selectedIndex);
+            string playersSuffix = e.PlayerCount > 1 ? $" ({e.PlayerCount}P)" : "";
+            string line = $"{i + 1,2}. {name,-12}  {e.Score,7}  L{e.LevelReached + 1}{playersSuffix}";
+            yield return (line, i == sel);
         }
 
         yield return ("", false);

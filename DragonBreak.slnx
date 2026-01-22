@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="DragonBreak/DragonBreak.Core/DragonBreak.Core.csproj" />
   <Project Path="DragonBreak/DragonBreak.DesktopGL/DragonBreak.DesktopGL.csproj" />
+  <Project Path="DragonBreak/DragonBreak.Android/DragonBreak.Android.csproj" />
 </Solution>

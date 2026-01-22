@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net9.0-android</TargetFramework>
+    <SupportedOSPlatformVersion>21</SupportedOSPlatformVersion>
+
+    <ApplicationId>com.dragonbreak.game</ApplicationId>
+    <ApplicationTitle>DragonBreak</ApplicationTitle>
+
+    <RootNamespace>DragonBreak.Android</RootNamespace>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DragonBreak.Core\DragonBreak.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MonoGame.Framework.Android" Version="3.8.*" />
+    <PackageReference Include="MonoGame.Content.Builder.Task" Version="3.8.*" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <MonoGameContentReference Include="..\DragonBreak.Core\Content\DragonBreak.mgcb">
+      <Link>Content\DragonBreak.mgcb</Link>
+    </MonoGameContentReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="Properties\AndroidManifest.xml" />
+    <None Include="Resources\values\strings.xml" />
+  </ItemGroup>
+</Project>

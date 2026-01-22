@@ -1,11 +1,19 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
     <PropertyGroup>
-        <TargetFramework>net9.0</TargetFramework>
+        <TargetFrameworks>net9.0;net9.0-android</TargetFrameworks>
         <Platforms>AnyCPU</Platforms>
         <RootNamespace>DragonBreak.Core</RootNamespace>
+        <!-- Android-specific settings -->
+        <SupportedOSPlatformVersion Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">21</SupportedOSPlatformVersion>
     </PropertyGroup>
 
-    <ItemGroup>
+    <!-- Desktop (DesktopGL) -->
+    <ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
         <PackageReference Include="MonoGame.Framework.DesktopGL" Version="3.8.*" />
+    </ItemGroup>
+
+    <!-- Android -->
+    <ItemGroup Condition="$([MSBuild]::GetTargetPlatformIdentifier('$(TargetFramework)')) == 'android'">
+        <PackageReference Include="MonoGame.Framework.Android" Version="3.8.*" />
     </ItemGroup>
 </Project>

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+          package="com.dragonbreak.game">
+
+  <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="35" />
+
+  <application android:label="DragonBreak"
+               android:allowBackup="true"
+               android:usesCleartextTraffic="false">
+    <!-- Activity attributes are mostly defined via [Activity] on MainActivity. -->
+  </application>
+
+</manifest>
+

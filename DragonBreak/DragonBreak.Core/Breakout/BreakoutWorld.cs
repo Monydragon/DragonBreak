@@ -19,6 +19,16 @@ public sealed partial class BreakoutWorld
 {
     private readonly Random _rng = new();
 
+    // Touch-drag state for grabbing paddles (mobile / multitouch).
+    private readonly Dictionary<int, int> _touchToPaddleIndex = new();
+    private readonly Dictionary<int, Vector2> _touchToPaddleOffset = new();
+
+    private void ClearTouchDragState()
+    {
+        _touchToPaddleIndex.Clear();
+        _touchToPaddleOffset.Clear();
+    }
+
     // Track prior raw input for debug-only combos (separate from InputMapper).
     private KeyboardState _prevDebugKeyboard;
     private readonly GamePadState[] _prevDebugPadByPlayer = new GamePadState[4];
@@ -388,6 +398,7 @@ public sealed partial class BreakoutWorld
         }
 
         _mode = WorldMode.Menu;
+        ClearTouchDragState();
 
         // Default difficulty selection comes from settings when available.
         // If not wired yet, keep normal.
@@ -691,24 +702,28 @@ public sealed partial class BreakoutWorld
 
         if (_mode == WorldMode.Menu)
         {
+            ClearTouchDragState();
             UpdateMenu(inputs, vp, dt);
             return;
         }
 
         if (_mode == WorldMode.Settings)
         {
+            ClearTouchDragState();
             UpdateSettingsMenu(inputs, vp, dt);
             return;
         }
 
         if (_mode == WorldMode.LevelInterstitial)
         {
+            ClearTouchDragState();
             UpdateLevelInterstitial(inputs, vp, dt);
             return;
         }
 
         if (_mode == WorldMode.Paused)
         {
+            ClearTouchDragState();
             UpdatePaused(inputs, vp, dt);
             return;
         }
@@ -886,10 +901,35 @@ public sealed partial class BreakoutWorld
         {
             float moveX = 0f;
             float moveY = 0f;
+            DragonBreakInput input = default;
+
             if (inputs != null && i < inputs.Length)
             {
-                moveX = inputs[i].MoveX;
-                moveY = inputs[i].MoveY;
+                input = inputs[i];
+                moveX = input.MoveX;
+                moveY = input.MoveY;
+            }
+
+            // Mobile single-player: intuitive grab + drag (X/Y) when the user touches the paddle.
+            // If dragging is active for this paddle, UpdateTouchDragForPaddles will drive it.
+            if (_activePlayerCount == 1 && i == 0 && input.Touches != null && input.Touches.HasAny)
+            {
+                // Let the touch system update the paddle (and its Velocity) using Paddle.Update.
+                UpdateTouchDragForPaddles(input, playfield, dt, minY, maxY);
+
+                // If this paddle is currently being dragged by any touch, skip keyboard move for this frame.
+                bool beingDragged = false;
+                foreach (var kvp in _touchToPaddleIndex)
+                {
+                    if (kvp.Value == i)
+                    {
+                        beingDragged = true;
+                        break;
+                    }
+                }
+
+                if (beingDragged)
+                    continue;
             }
 
             _paddles[i].Update(dt, moveX, moveY, playfield.Width, minY, maxY);
@@ -3120,6 +3160,113 @@ public sealed partial class BreakoutWorld
         if (!string.IsNullOrEmpty(action))
         {
             sb.DrawString(_hudFont, action, new Vector2(x, y), new Color(200, 200, 200), 0f, Vector2.Zero, bodyScale, SpriteEffects.None, 0f);
+        }
+    }
+
+    private void UpdateTouchDragForPaddles(DragonBreakInput input, Viewport playfield, float dt, float minY, float maxY)
+    {
+        if (_paddles.Count <= 0)
+        {
+            ClearTouchDragState();
+            return;
+        }
+
+        // Release any ended/canceled touches.
+        var touches = input.Touches;
+        if (touches != null)
+        {
+            for (int ti = 0; ti < touches.Points.Count; ti++)
+            {
+                var tp = touches.Points[ti];
+                if (tp.Phase is TouchPhase.Ended or TouchPhase.Canceled)
+                {
+                    _touchToPaddleIndex.Remove(tp.Id);
+                    _touchToPaddleOffset.Remove(tp.Id);
+                }
+            }
+        }
+
+        // Acquire new captures on Began.
+        if (touches != null)
+        {
+            for (int ti = 0; ti < touches.Points.Count; ti++)
+            {
+                var tp = touches.Points[ti];
+                if (tp.Phase != TouchPhase.Began)
+                    continue;
+
+                if (_touchToPaddleIndex.ContainsKey(tp.Id))
+                    continue;
+
+                // Convert to playfield-local pixels.
+                float px = tp.X01 * playfield.Width;
+                float py = tp.Y01 * playfield.Height;
+
+                // Only start a drag if the user touched a paddle (intuitive grab).
+                int picked = -1;
+                for (int pi = 0; pi < _paddles.Count; pi++)
+                {
+                    if (_paddles[pi].Bounds.Contains((int)px, (int)py))
+                    {
+                        picked = pi;
+                        break;
+                    }
+                }
+
+                if (picked < 0)
+                    continue;
+
+                // Capture: store offset from touch to paddle top-left to prevent snapping.
+                var paddle = _paddles[picked];
+                var offset = new Vector2(paddle.Position.X - px, paddle.Position.Y - py);
+
+                _touchToPaddleIndex[tp.Id] = picked;
+                _touchToPaddleOffset[tp.Id] = offset;
+            }
+        }
+
+        // Apply drag to captured paddles.
+        if (touches != null)
+        {
+            for (int ti = 0; ti < touches.Points.Count; ti++)
+            {
+                var tp = touches.Points[ti];
+                if (tp.Phase is not (TouchPhase.Began or TouchPhase.Moved))
+                    continue;
+
+                if (!_touchToPaddleIndex.TryGetValue(tp.Id, out int pi))
+                    continue;
+
+                if ((uint)pi >= (uint)_paddles.Count)
+                    continue;
+
+                Vector2 offset = _touchToPaddleOffset.TryGetValue(tp.Id, out var o) ? o : Vector2.Zero;
+
+                float px = tp.X01 * playfield.Width;
+                float py = tp.Y01 * playfield.Height;
+
+                var targetPos = new Vector2(px + offset.X, py + offset.Y);
+
+                // Clamp to playfield bounds and vertical limits.
+                targetPos.X = MathHelper.Clamp(targetPos.X, 0f, playfield.Width - _paddles[pi].Size.X);
+                targetPos.Y = MathHelper.Clamp(targetPos.Y, minY, maxY);
+
+                // Convert absolute target into MoveX/MoveY so Paddle.Update computes velocity consistently.
+                Vector2 delta = targetPos - _paddles[pi].Position;
+
+                float moveX = 0f;
+                float moveY = 0f;
+
+                const float snapPixels = 1.5f;
+                if (Math.Abs(delta.X) > snapPixels)
+                    moveX = MathHelper.Clamp(delta.X / 60f, -1f, 1f);
+
+                // Note the sign convention: Paddle.Update subtracts moveY from Position.Y, so invert.
+                if (Math.Abs(delta.Y) > snapPixels)
+                    moveY = MathHelper.Clamp(-(delta.Y / 60f), -1f, 1f);
+
+                _paddles[pi].Update(dt, moveX, moveY, playfield.Width, minY, maxY);
+            }
         }
     }
 }

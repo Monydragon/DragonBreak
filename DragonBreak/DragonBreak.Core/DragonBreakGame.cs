@@ -1,3 +1,4 @@
+#nullable enable
 using System;
 using System.Collections.Generic;
 using System.Globalization;
@@ -24,6 +25,12 @@ namespace DragonBreak.Core
         private SpriteBatch _spriteBatch = null!;
         private readonly InputMapper _input = new();
         private readonly BreakoutWorld _world = new();
+
+        /// <summary>
+        /// Optional platform hook to provide current multitouch input.
+        /// If null, the game uses keyboard/gamepad only.
+        /// </summary>
+        public Func<Viewport, TouchState>? TouchInjector { get; set; }
 
         // Cache rasterizer states (avoid allocating per-frame).
         private static readonly RasterizerState RasterScissorOn = new() { ScissorTestEnable = true };
@@ -100,7 +107,10 @@ namespace DragonBreak.Core
             ApplySettings(_settings.Current);
 
             // Forward text input (keyboard typing) to the world for name entry.
+            // Some platform builds (e.g., Android) don't expose Window.TextInput.
+#if !ANDROID && !IOS
             Window.TextInput += (_, e) => _world.OnTextInput(e.Character);
+#endif
 
             base.Initialize();
 
@@ -174,6 +184,12 @@ namespace DragonBreak.Core
             var input2 = _input.UpdateForPlayer(PlayerIndex.Two);
             var input3 = _input.UpdateForPlayer(PlayerIndex.Three);
             var input4 = _input.UpdateForPlayer(PlayerIndex.Four);
+
+            // Mobile: inject pointer/touches into player 1.
+            if (TouchInjector != null)
+            {
+                input1 = input1.WithTouches(TouchInjector(GraphicsDevice.Viewport));
+            }
 
             // Exit the game if requested.
             if (input1.ExitPressed || input2.ExitPressed || input3.ExitPressed || input4.ExitPressed)

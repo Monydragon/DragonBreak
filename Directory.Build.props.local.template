@@ -1,0 +1,18 @@
+<!--
+Local (untracked) build settings.
+
+Copy this file to `Directory.Build.props.local` (same folder) and edit values.
+This lets you build Android/iOS projects without committing machine-specific paths.
+-->
+<Project>
+  <PropertyGroup>
+    <!-- Example Android SDK path on Windows (Android Studio default):
+         C:\Users\<you>\AppData\Local\Android\Sdk
+    -->
+    <!-- <AndroidSdkDirectory>...</AndroidSdkDirectory> -->
+
+    <!-- Optional: specify Java/Android toolchain locations if needed by your setup. -->
+    <!-- <JavaSdkDirectory>...</JavaSdkDirectory> -->
+  </PropertyGroup>
+</Project>
+

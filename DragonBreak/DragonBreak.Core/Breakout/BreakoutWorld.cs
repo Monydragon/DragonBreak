@@ -17,6 +17,40 @@ namespace DragonBreak.Core.Breakout;
 
 public sealed partial class BreakoutWorld
 {
+    // Ellipsize a string to fit within a given width, using the provided font and scale.
+    private static string EllipsizeToFit(SpriteFont? font, string text, float maxWidth, float scale)
+    {
+        if (font == null || string.IsNullOrEmpty(text) || maxWidth <= 1f)
+            return text;
+
+        text = text.Replace("\r", " ").Replace("\n", " ").Trim();
+        if (font.MeasureString(text).X * scale <= maxWidth)
+            return text;
+
+        const string ell = "...";
+        string t = text;
+        int lo = 0;
+        int hi = t.Length;
+
+        // Binary search best length.
+        while (lo + 1 < hi)
+        {
+            int mid = (lo + hi) / 2;
+            string candidate = t.Substring(0, mid).TrimEnd() + ell;
+            if (font.MeasureString(candidate).X * scale <= maxWidth)
+                lo = mid;
+            else
+                hi = mid;
+        }
+
+        string final = t.Substring(0, lo).TrimEnd() + ell;
+        // If even "..." doesn't fit, return empty.
+        if (font.MeasureString(final).X * scale > maxWidth)
+            return string.Empty;
+
+        return final;
+    }
+
     private readonly Random _rng = new();
 
     // Touch-drag state for grabbing paddles (mobile / multitouch).
@@ -467,6 +501,12 @@ public sealed partial class BreakoutWorld
 
         _levelIndex = 0;
 
+        // Desktop supports local MP; mobile forces single player.
+        if (DragonBreakGame.IsMobile)
+            _activePlayerCount = 1;
+        else
+            _activePlayerCount = Math.Clamp(_selectedPlayers, 1, 4);
+
         _livesByPlayer.Clear();
         _scoreByPlayer.Clear();
         for (int i = 0; i < _activePlayerCount; i++)
@@ -741,10 +781,21 @@ public sealed partial class BreakoutWorld
                 return;
             }
 
+            // Touch back button
+            if (inputs != null && inputs.Length > 0 && inputs[0].Touches.TryGetBegan(out var backTap) && backTap.IsTap)
+            {
+                float x = backTap.X01 * vp.Width;
+                float y = backTap.Y01 * vp.Height;
+                if (GetBackButtonRectForTouch(vp).Contains((int)x, (int)y))
+                {
+                    _mode = _returnModeAfterHighScores;
+                    return;
+                }
+            }
+
             _highScoresScreen.Update(inputs, vp, dt);
             if (_highScoresScreen.ConsumeAction() == HighScoresScreen.HighScoresAction.Back)
             {
-                // Return to whichever screen opened highscores.
                 _mode = _returnModeAfterHighScores;
             }
             return;
@@ -791,6 +842,76 @@ public sealed partial class BreakoutWorld
                 return;
             }
 
+            // Touch: tap on Retry/Main Menu rows, and provide a back button.
+            if (inputs != null && inputs.Length > 0 && inputs[0].Touches.TryGetBegan(out var tap) && tap.IsTap)
+            {
+                float xx = tap.X01 * vp.Width;
+                float yy = tap.Y01 * vp.Height;
+
+                if (GetBackButtonRectForTouch(vp).Contains((int)xx, (int)yy))
+                {
+                    _mode = WorldMode.Menu;
+                    _menuItem = MenuItem.Start;
+                    return;
+                }
+
+                // Hit-test the two bottom action rows inside the panel.
+                // Panel is centered in BreakoutWorld.UiHelpers.DrawMenuLines.
+                // We approximate by using the same measurement logic.
+                if (_hudFont != null)
+                {
+                    float scaleUi = (_settings?.Current.Ui ?? UiSettings.Default).HudScale;
+                    float menuScale = MathHelper.Clamp(Math.Max(scaleUi, vp.Height >= vp.Width ? 3.0f : 2.1f), 1.6f, 3.4f);
+                    float lineH = _hudFont.LineSpacing * menuScale;
+
+                    // Build the same line list as GetLines() and measure it.
+                    var lines = new List<(string Text, bool Selected)>();
+                    foreach (var line in _gameOverScreen.GetLines(vp))
+                        lines.Add(line);
+
+                    float maxW = 0f;
+                    int count = 0;
+                    for (int i = 0; i < lines.Count; i++)
+                    {
+                        maxW = Math.Max(maxW, _hudFont.MeasureString(lines[i].Text).X * menuScale);
+                        count++;
+                    }
+
+                    float panelW = Math.Min(vp.Width - 40, Math.Max(360, maxW + 64));
+                    float panelH = Math.Min(vp.Height - 40, Math.Max(220, count * lineH + 56));
+
+                    var panel = new Rectangle(
+                        (int)((vp.Width - panelW) * 0.5f),
+                        (int)((vp.Height - panelH) * 0.5f),
+                        (int)panelW,
+                        (int)panelH);
+
+                    if (panel.Contains((int)xx, (int)yy))
+                    {
+                        float y0 = panel.Y + 28;
+                        int row = (int)MathF.Floor((yy - y0) / Math.Max(1f, lineH));
+
+                        // Retry / Main Menu are the last two lines.
+                        int retryRow = lines.Count - 2;
+                        int menuRow = lines.Count - 1;
+
+                        if (row == retryRow)
+                        {
+                            _mode = WorldMode.Playing;
+                            StartNewGame(vp, _preset);
+                            return;
+                        }
+
+                        if (row == menuRow)
+                        {
+                            _mode = WorldMode.Menu;
+                            _menuItem = MenuItem.Start;
+                            return;
+                        }
+                    }
+                }
+            }
+
             _gameOverScreen.Update(inputs, vp, dt);
             switch (_gameOverScreen.ConsumeAction())
             {
@@ -809,24 +930,14 @@ public sealed partial class BreakoutWorld
         // Gameplay uses the playfield viewport (below the HUD bar).
         var playfield = GetPlayfieldViewport(vp);
 
-        // --- Mobile touch: PAUSE button (top-right in HUD bar) ---
-        // Keep it away from score/lives which are typically left-aligned.
+        // --- Mobile touch: PAUSE button (top-center under level) ---
         if (inputs != null && inputs.Length > 0 && inputs[0].Touches.TryGetBegan(out var pauseTap) && pauseTap.IsTap)
         {
             float x = pauseTap.X01 * vp.Width;
             float y = pauseTap.Y01 * vp.Height;
 
             var ui = _settings?.Current.Ui ?? UiSettings.Default;
-            float scale = ui.HudScale;
-            float pauseScale = scale * 0.75f;
-            var pauseText = "PAUSE";
-            var size = _hudFont != null ? _hudFont.MeasureString(pauseText) * pauseScale : new Vector2(64, 20);
-
-            // Top-right placement.
-            int w = (int)(size.X + 28);
-            int h = (int)(size.Y + 16);
-            int pad = 12;
-            var pauseRect = new Rectangle(vp.Width - w - pad, 10, w, h);
+            var pauseRect = GetPauseButtonRectForTouch(vp, _hudFont, ui.HudScale);
 
             if (pauseRect.Contains((int)x, (int)y))
             {
@@ -1188,6 +1299,50 @@ public sealed partial class BreakoutWorld
 
     private void UpdatePaused(DragonBreakInput[] inputs, Viewport vp, float dt)
     {
+        // Touch: tap on pause menu items.
+        if (inputs != null && inputs.Length > 0)
+        {
+            var ui = _settings?.Current.Ui ?? UiSettings.Default;
+            if (TryConsumePauseMenuTouch(vp, inputs[0], ui.HudScale, out var touchedAction))
+            {
+                switch (touchedAction)
+                {
+                    case PauseMenuScreen.PauseAction.Resume:
+                        ExitPausedToPlaying();
+                        return;
+                    case PauseMenuScreen.PauseAction.RestartLevel:
+                    {
+                        var playfield = GetPlayfieldViewport(vp);
+                        _powerUps.Clear();
+                        ClearEffects();
+                        LoadLevel(playfield, _levelIndex);
+                        ResetBallOnPaddle();
+                        ExitPausedToPlaying();
+                        return;
+                    }
+                    case PauseMenuScreen.PauseAction.HighScores:
+                        ShowHighScores(WorldMode.Paused);
+                        return;
+                    case PauseMenuScreen.PauseAction.MainMenu:
+                        _mode = WorldMode.Menu;
+                        _menuItem = MenuItem.Start;
+                        return;
+                }
+            }
+        }
+
+        // Touch back button should resume.
+        if (inputs != null && inputs.Length > 0 && inputs[0].Touches.TryGetBegan(out var tap) && tap.IsTap)
+        {
+            float x = tap.X01 * vp.Width;
+            float y = tap.Y01 * vp.Height;
+            if (GetBackButtonRectForTouch(vp).Contains((int)x, (int)y))
+            {
+                ExitPausedToPlaying();
+                return;
+            }
+        }
+
         // While paused, only tick toast so UI messages can fade.
         if (_toastTimeLeft > 0f)
         {
@@ -1402,6 +1557,15 @@ public sealed partial class BreakoutWorld
         bool confirmPressed = false;
         bool backPressed = false;
 
+        // Touch back button.
+        if (inputs != null && inputs.Length > 0 && inputs[0].Touches.TryGetBegan(out var tap) && tap.IsTap)
+        {
+            float x = tap.X01 * vp.Width;
+            float y = tap.Y01 * vp.Height;
+            if (GetBackButtonRectForTouch(vp).Contains((int)x, (int)y))
+                backPressed = true;
+        }
+
         if (inputs != null)
         {
             for (int i = 0; i < inputs.Length; i++)
@@ -1409,6 +1573,18 @@ public sealed partial class BreakoutWorld
                 confirmPressed |= inputs[i].MenuConfirmPressed || inputs[i].ServePressed;
                 backPressed |= inputs[i].MenuBackPressed;
             }
+        }
+
+        // Ensure the interstitial line fits (no overflow on mobile).
+        if (_hudFont != null)
+        {
+            var ui = _settings?.Current.Ui ?? UiSettings.Default;
+            float menuScale = GetMenuScale(vp, ui.HudScale);
+            float lineH = _hudFont.LineSpacing * menuScale;
+            // 4 lines in interstitial.
+            var panel = GetMenuPanelRect(vp, 4, lineH);
+            float maxW = Math.Max(1f, panel.Width - 64);
+            _levelInterstitialLine = EllipsizeToFit(_hudFont, _levelInterstitialLine, maxW, menuScale);
         }
 
         var continueMode = _settings?.Current.Gameplay.ContinueMode ?? ContinueMode.PromptThenAuto;
@@ -2415,4 +2591,23 @@ public sealed partial class BreakoutWorld
 
     // HUD pause button (top-left of screen).
     private bool _pauseTapConsumed;
+
+    private static Rectangle GetBackButtonRectForTouch(Viewport vp)
+        => new(14, 14, Math.Clamp((int)(vp.Width * 0.18f), 120, 220), Math.Clamp((int)(vp.Height * 0.075f), 56, 90));
+
+    private static Rectangle GetPauseButtonRectForTouch(Viewport vp, SpriteFont? font, float hudScale)
+    {
+        // Match BreakoutWorld.UiHelpers.cs placement.
+        float pauseScale = hudScale * 0.78f;
+        var pauseText = "PAUSE";
+        var size = font != null ? font.MeasureString(pauseText) * pauseScale : new Vector2(64, 20);
+
+        int w = (int)(size.X + 40);
+        int h = (int)(size.Y + 22);
+
+        int y = 10 + (int)((font?.LineSpacing ?? 18) * (hudScale * 0.9f)) + 6;
+        y = Math.Clamp(y, 10, Math.Max(10, GetHudBarHeight(vp) - h - 6));
+
+        return new Rectangle((int)((vp.Width - w) * 0.5f), y, w, h);
+    }
 }

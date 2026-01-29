@@ -1,6 +1,7 @@
 #nullable enable
 using System;
 using System.Collections.Generic;
+using DragonBreak.Core.Breakout.Ui;
 using DragonBreak.Core.Input;
 using DragonBreak.Core.Settings;
 using Microsoft.Xna.Framework;
@@ -105,6 +106,7 @@ public sealed partial class BreakoutWorld
         var lines = new List<(string Text, bool Selected)>
         {
             ("START", _menuItem == MenuItem.Start),
+            ($"PLAYERS: {_selectedPlayers}   <   >", _menuItem == MenuItem.Players),
             ($"DIFFICULTY: {_selectedDifficultyId}   <   >", _menuItem == MenuItem.Difficulty),
             ("HIGHSCORES", _menuItem == MenuItem.HighScores),
             ("SETTINGS", _menuItem == MenuItem.Settings),
@@ -161,7 +163,6 @@ public sealed partial class BreakoutWorld
         foreach (var (label, selected) in _pauseMenu.GetLines())
             lines.Add((label.ToUpperInvariant(), selected));
 
-        // Use phone-friendly menu scaling.
         DrawMenuLines(sb, vp, lines, GetMenuScale(vp, scale));
     }
 
@@ -174,8 +175,8 @@ public sealed partial class BreakoutWorld
         foreach (var (text, selected) in _highScoresScreen.GetLines(vp))
             lines.Add((text.ToUpperInvariant(), selected));
 
-        // Slightly smaller so more rows fit.
-        DrawMenuLines(sb, vp, lines, scale * 0.95f);
+        // Use the same phone-friendly scale for touch readability.
+        DrawMenuLines(sb, vp, lines, GetMenuScale(vp, scale) * 0.95f);
     }
 
     // --- Input / menu update (minimal, compiling) ---
@@ -202,7 +203,7 @@ public sealed partial class BreakoutWorld
             float menuScale = GetMenuScale(vp, (_settings?.Current.Ui ?? UiSettings.Default).HudScale) * 1.05f;
             float lineH = (_hudFont?.LineSpacing ?? 18) * menuScale;
 
-            int count = 4;
+            int count = 5;
             var panel = GetMenuPanelRect(vp, count, lineH);
 
             int row = HitTestMenuRow(vp, panel, lineH, tap.X01, tap.Y01);
@@ -211,9 +212,10 @@ public sealed partial class BreakoutWorld
                 _menuItem = row switch
                 {
                     0 => MenuItem.Start,
-                    1 => MenuItem.Difficulty,
-                    2 => MenuItem.HighScores,
-                    3 => MenuItem.Settings,
+                    1 => MenuItem.Players,
+                    2 => MenuItem.Difficulty,
+                    3 => MenuItem.HighScores,
+                    4 => MenuItem.Settings,
                     _ => _menuItem,
                 };
 
@@ -221,7 +223,7 @@ public sealed partial class BreakoutWorld
             }
         }
 
-        // Touch back button isn't shown on the main menu, but if we ever add it, wire it.
+        // Touch back button.
         if (input.Touches.TryGetBegan(out var backTap) && backTap.IsTap)
         {
             if (TapInside(vp, backTap.X01, backTap.Y01, GetBackButtonRect(vp)))
@@ -247,7 +249,7 @@ public sealed partial class BreakoutWorld
         }
         if (!down) _menuDownConsumed = false;
 
-        // Difficulty uses arrows
+        // Difficulty/Players use arrows
         if (_menuItem == MenuItem.Difficulty)
         {
             if (leftHeld && !_menuLeftConsumed)
@@ -261,6 +263,19 @@ public sealed partial class BreakoutWorld
                 _menuRightConsumed = true;
                 _selectedPresetIndex = Math.Clamp(_selectedPresetIndex + 1, 0, Presets.Length - 1);
                 _selectedDifficultyId = PresetIndexToDifficulty(_selectedPresetIndex);
+            }
+        }
+        else if (_menuItem == MenuItem.Players)
+        {
+            if (leftHeld && !_menuLeftConsumed)
+            {
+                _menuLeftConsumed = true;
+                _selectedPlayers = Math.Clamp(_selectedPlayers - 1, 1, 4);
+            }
+            if (rightHeld && !_menuRightConsumed)
+            {
+                _menuRightConsumed = true;
+                _selectedPlayers = Math.Clamp(_selectedPlayers + 1, 1, 4);
             }
         }
 
@@ -293,6 +308,9 @@ public sealed partial class BreakoutWorld
                 case MenuItem.HighScores:
                     ShowHighScores(WorldMode.Menu);
                     break;
+                case MenuItem.Players:
+                    // No-op: left/right changes players.
+                    break;
             }
         }
     }
@@ -300,7 +318,8 @@ public sealed partial class BreakoutWorld
     private static MenuItem NextMenuItem(MenuItem item)
         => item switch
         {
-            MenuItem.Start => MenuItem.Difficulty,
+            MenuItem.Start => MenuItem.Players,
+            MenuItem.Players => MenuItem.Difficulty,
             MenuItem.Difficulty => MenuItem.HighScores,
             MenuItem.HighScores => MenuItem.Settings,
             MenuItem.Settings => MenuItem.Start,
@@ -313,7 +332,8 @@ public sealed partial class BreakoutWorld
             MenuItem.Start => MenuItem.Settings,
             MenuItem.Settings => MenuItem.HighScores,
             MenuItem.HighScores => MenuItem.Difficulty,
-            MenuItem.Difficulty => MenuItem.Start,
+            MenuItem.Difficulty => MenuItem.Players,
+            MenuItem.Players => MenuItem.Start,
             _ => MenuItem.Start,
         };
 
@@ -450,63 +470,36 @@ public sealed partial class BreakoutWorld
         return row;
     }
 
-    private void ApplyTouchToSettingsMenu(Viewport vp, in DragonBreakInput input, ref bool leftHeld, ref bool rightHeld, ref bool confirm)
+    private bool TryConsumePauseMenuTouch(Viewport vp, in DragonBreakInput input, float uiScale, out PauseMenuScreen.PauseAction action)
     {
-        float scale = GetMenuScale(vp, (_settings?.Current.Ui ?? UiSettings.Default).HudScale);
-        float lineH = (_hudFont?.LineSpacing ?? 18) * scale;
-
-        int count = 11;
-        var panel = GetMenuPanelRect(vp, count, lineH);
+        action = PauseMenuScreen.PauseAction.None;
 
         if (!input.Touches.TryGetBegan(out var tap) || !tap.IsTap)
-            return;
+            return false;
+
+        // Pause menu draws: "PAUSED" + blank + 4 items.
+        float menuScale = GetMenuScale(vp, uiScale);
+        float lineH = (_hudFont?.LineSpacing ?? 18) * menuScale;
+
+        int lineCount = 2 + 4;
+        var panel = GetMenuPanelRect(vp, lineCount, lineH);
 
         int row = HitTestMenuRow(vp, panel, lineH, tap.X01, tap.Y01);
         if (row < 0)
-            return;
+            return false;
 
-        // Map row to settings item.
-        SettingsItem item = row switch
+        // Rows 0/1 are header + blank.
+        int item = row - 2;
+        action = item switch
         {
-            0 => SettingsItem.MasterVolume,
-            1 => SettingsItem.BgmVolume,
-            2 => SettingsItem.SfxVolume,
-            3 => SettingsItem.HudEnabled,
-            4 => SettingsItem.HudScale,
-            5 => SettingsItem.ContinueMode,
-            6 => SettingsItem.AutoContinueSeconds,
-            7 => SettingsItem.LevelSeed,
-            8 => SettingsItem.DebugMode,
-            9 => SettingsItem.Apply,
-            10 => SettingsItem.Cancel,
-            _ => _settingsItem,
+            0 => PauseMenuScreen.PauseAction.Resume,
+            1 => PauseMenuScreen.PauseAction.RestartLevel,
+            2 => PauseMenuScreen.PauseAction.HighScores,
+            3 => PauseMenuScreen.PauseAction.MainMenu,
+            _ => PauseMenuScreen.PauseAction.None,
         };
 
-        _settingsItem = item;
-        SyncSettingsSelectedIndexFromItem();
-
-        // Tap to activate Apply/Cancel.
-        if (item == SettingsItem.Apply || item == SettingsItem.Cancel)
-        {
-            confirm = true;
-            return;
-        }
-
-        // More reliable left/right adjustment:
-        // - If you tap anywhere in the left/right quarter of the panel, treat it as decrement/increment.
-        // This compensates for large font sizes on mobile.
-        float x = tap.X01 * vp.Width;
-        float leftZone = panel.X + panel.Width * 0.25f;
-        float rightZone = panel.X + panel.Width * 0.75f;
-
-        if (x < leftZone)
-            leftHeld = true;
-        else if (x > rightZone)
-            rightHeld = true;
-        else
-        {
-            // If you tap near the center, don't change value; just select the row.
-        }
+        return action != PauseMenuScreen.PauseAction.None;
     }
 
     private static Rectangle GetMenuPanelRect(Viewport vp, int lineCount, float lineH)
@@ -528,17 +521,46 @@ public sealed partial class BreakoutWorld
     private static float GetMenuScale(Viewport vp, float baseScale)
     {
         // Make menus feel like "phone UI".
-        // User requested ~3x; on portrait devices we boost aggressively.
         bool portrait = vp.Height >= vp.Width;
 
         float s = baseScale;
-
-        // Force a large minimum scale regardless of HUD scale.
-        // Typical old value ~1.0; this pushes near 3x.
         s = MathF.Max(s, portrait ? 3.0f : 2.1f);
-
-        // Limit so text doesn't explode on extreme resolutions.
         return MathHelper.Clamp(s, 1.6f, 3.4f);
+    }
+
+    private void ApplyTouchToSettingsMenu(Viewport vp, in DragonBreakInput input, ref bool leftHeld, ref bool rightHeld, ref bool confirm)
+    {
+        if (!input.Touches.TryGetBegan(out var tap) || !tap.IsTap)
+            return;
+
+        float menuScale = GetMenuScale(vp, (_settings?.Current.Ui ?? UiSettings.Default).HudScale);
+        float lineH = (_hudFont?.LineSpacing ?? 18) * menuScale;
+
+        int count = 11; // matches DrawSettingsMenu() visible entries
+        var panel = GetMenuPanelRect(vp, count, lineH);
+
+        // Tap on a row to select it.
+        int row = HitTestMenuRow(vp, panel, lineH, tap.X01, tap.Y01);
+        if (row < 0)
+            return;
+
+        // Update selection based on tap row.
+        _settingsSelectedIndex = Math.Clamp(row, 0, SettingsMenuItemsTopToBottom.Length - 1);
+        SyncSettingsItemFromSelectedIndex();
+
+        // If it is APPLY/CANCEL row, treat as confirm.
+        if (_settingsItem == SettingsItem.Apply || _settingsItem == SettingsItem.Cancel)
+        {
+            confirm = true;
+            return;
+        }
+
+        // Otherwise: left quarter = decrement, right quarter = increment.
+        float x = tap.X01 * vp.Width;
+        if (x < panel.X + panel.Width * 0.25f)
+            leftHeld = true;
+        else if (x > panel.X + panel.Width * 0.75f)
+            rightHeld = true;
     }
 
     /// <summary>
@@ -553,9 +575,6 @@ public sealed partial class BreakoutWorld
             return;
         }
 
-        // With 2+ fingers, we still allow dragging (one finger controls the paddle).
-        // The second finger is used by gameplay code as a catch/launch gesture.
-
         // Release ended touches.
         for (int i = 0; i < input.Touches.Points.Count; i++)
         {
@@ -567,8 +586,7 @@ public sealed partial class BreakoutWorld
             }
         }
 
-        // Capture new touches: only bind ONE touch to a paddle (the best/closest). Additional touches are ignored for dragging.
-        // If we already have a bound touch, keep it.
+        // Capture new touches: only bind ONE touch to a paddle.
         if (_touchToPaddleIndex.Count == 0)
         {
             for (int i = 0; i < input.Touches.Points.Count; i++)
@@ -603,7 +621,7 @@ public sealed partial class BreakoutWorld
             }
         }
 
-        // Apply drags for the bound touch (if it exists).
+        // Apply drag for bound touch.
         foreach (var kvp in _touchToPaddleIndex)
         {
             int touchId = kvp.Key;
@@ -611,7 +629,6 @@ public sealed partial class BreakoutWorld
             if ((uint)paddleIndex >= (uint)_paddles.Count)
                 continue;
 
-            // Find current touch point by id.
             TouchPoint? point = null;
             for (int i = 0; i < input.Touches.Points.Count; i++)
             {
@@ -626,12 +643,13 @@ public sealed partial class BreakoutWorld
             if (point == null)
                 continue;
 
-            var touch = point.Value;
-            if (touch.Phase != TouchPhase.Began && touch.Phase != TouchPhase.Moved)
+            var tp = point.Value;
+            if (tp.Phase != TouchPhase.Began && tp.Phase != TouchPhase.Moved)
                 continue;
 
-            var touchPx = new Vector2(touch.X01 * playfield.Width, touch.Y01 * playfield.Height);
-            var offset = _touchToPaddleOffset.TryGetValue(touch.Id, out var o) ? o : Vector2.Zero;
+            var touchPx = new Vector2(tp.X01 * playfield.Width, tp.Y01 * playfield.Height);
+            var offset = _touchToPaddleOffset.TryGetValue(touchId, out var o) ? o : Vector2.Zero;
+
             var targetCenter = touchPx + offset;
 
             var p = _paddles[paddleIndex];
@@ -646,8 +664,8 @@ public sealed partial class BreakoutWorld
             float alpha = 1f - MathF.Exp(-TouchDragSmoothingHz * dt);
             var desiredPos = Vector2.Lerp(p.Position, new Vector2(targetX, targetY), alpha);
             var delta = desiredPos - p.Position;
-            float denom = Math.Max(0.0001f, p.SpeedPixelsPerSecond * dt);
 
+            float denom = Math.Max(0.0001f, p.SpeedPixelsPerSecond * dt);
             float moveX = delta.X / denom;
             float moveY = -delta.Y / denom;
 
@@ -658,4 +676,3 @@ public sealed partial class BreakoutWorld
         }
     }
 }
-

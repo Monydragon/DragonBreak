@@ -245,17 +245,21 @@ public sealed partial class BreakoutWorld
             sb.DrawString(_hudFont, line, new Vector2(x, y), colColor, 0f, Vector2.Zero, lineScale, SpriteEffects.None, 0f);
         }
 
-        // --- Pause button (top-right) ---
+        // --- Pause button (top-center, under level) ---
         var pauseText = "PAUSE";
-        var pauseScale = scale * 0.75f;
+        var pauseScale = scale * 0.78f;
         var pauseSize = _hudFont.MeasureString(pauseText) * pauseScale;
 
-        int w = (int)(pauseSize.X + 32);
-        int h = (int)(pauseSize.Y + 20);
-        int pad = 12;
-        var pauseRect = new Rectangle(vp.Width - w - pad, 10, w, h);
+        int w = (int)(pauseSize.X + 40);
+        int h = (int)(pauseSize.Y + 22);
+
+        // Place under the level line, centered.
+        int pauseY = 10 + (int)(_hudFont.LineSpacing * (scale * 0.9f)) + 6;
+        pauseY = Math.Clamp(pauseY, 10, Math.Max(10, GetHudBarHeight(vp) - h - 6));
+
+        var pauseRect = new Rectangle((int)((vp.Width - w) * 0.5f), pauseY, w, h);
 
         DrawCenteredPanel(sb, vp, pauseRect, new Color(0, 0, 0, 120), new Color(255, 255, 255, 90));
-        sb.DrawString(_hudFont, pauseText, new Vector2(pauseRect.X + 16, pauseRect.Y + 8), Color.White, 0f, Vector2.Zero, pauseScale, SpriteEffects.None, 0f);
+        sb.DrawString(_hudFont, pauseText, new Vector2(pauseRect.X + 20, pauseRect.Y + 9), Color.White, 0f, Vector2.Zero, pauseScale, SpriteEffects.None, 0f);
     }
 }

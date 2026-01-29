@@ -83,8 +83,18 @@ namespace DragonBreak.Core
             Content.RootDirectory = "Content";
 
             // Configure screen orientations.
-            graphicsDeviceManager.SupportedOrientations =
-                DisplayOrientation.LandscapeLeft | DisplayOrientation.LandscapeRight;
+            if (IsMobile)
+            {
+                // Mobile: start in portrait-friendly configuration, but allow rotation.
+                graphicsDeviceManager.SupportedOrientations =
+                    DisplayOrientation.Portrait | DisplayOrientation.PortraitDown |
+                    DisplayOrientation.LandscapeLeft | DisplayOrientation.LandscapeRight;
+            }
+            else
+            {
+                graphicsDeviceManager.SupportedOrientations =
+                    DisplayOrientation.LandscapeLeft | DisplayOrientation.LandscapeRight;
+            }
 
             if (IsDesktop)
             {

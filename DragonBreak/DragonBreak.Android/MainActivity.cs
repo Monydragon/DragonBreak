@@ -12,7 +12,7 @@ namespace DragonBreak.Android;
 [Activity(
     Label = "DragonBreak",
     MainLauncher = true,
-    ScreenOrientation = ScreenOrientation.Landscape,
+    ScreenOrientation = ScreenOrientation.Portrait,
     ConfigurationChanges = ConfigChanges.Orientation | ConfigChanges.KeyboardHidden | ConfigChanges.Keyboard | ConfigChanges.ScreenSize,
     Theme = "@android:style/Theme.NoTitleBar.Fullscreen")]
 public class MainActivity : Microsoft.Xna.Framework.AndroidGameActivity

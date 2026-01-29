@@ -1,3 +1,4 @@
+#nullable enable
 using Microsoft.Xna.Framework;
 
 namespace DragonBreak.Core.Input;
@@ -108,7 +109,7 @@ public readonly struct DragonBreakInput
             menuUpHeld: MenuUpHeld,
             menuDownHeld: MenuDownHeld,
             menuLeftHeld: MenuLeftHeld,
-            menuRightHeld: MenuLeftHeld,
+            menuRightHeld: MenuRightHeld,
             menuMoveX: MenuMoveX,
             menuMoveY: MenuMoveY,
             pointerActive: pointer.IsActive,

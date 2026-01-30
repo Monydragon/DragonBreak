@@ -10,29 +10,6 @@ namespace DragonBreak.Core.Breakout;
 
 public sealed partial class BreakoutWorld
 {
-    // --- Toast helpers ---
-    private void ShowToast(string text, float durationSeconds)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return;
-
-        _toastText = text;
-        _toastTimeLeft = Math.Max(_toastTimeLeft, durationSeconds);
-    }
-
-    private static string GetPowerUpToastText(PowerUpType type)
-        => type switch
-        {
-            PowerUpType.ExpandPaddle => "Paddle expanded",
-            PowerUpType.SlowBall => "Ball slowed",
-            PowerUpType.FastBall => "Ball sped up",
-            PowerUpType.MultiBall => "Multiball",
-            PowerUpType.ScoreBoost => "Score x2",
-            PowerUpType.ExtraLife => "+1 Life",
-            PowerUpType.ScoreBurst => "+Score",
-            _ => type.ToString(),
-        };
-
     // --- Settings adjustment ---
     private void AdjustSettingsValue(ref GameSettings pending, int dir)
     {
@@ -245,69 +222,6 @@ public sealed partial class BreakoutWorld
             sb.DrawString(_hudFont, line, new Vector2(x, y), colColor, 0f, Vector2.Zero, lineScale, SpriteEffects.None, 0f);
         }
 
-        // --- Active power-ups (timers) ---
-        {
-            float powerScale = scale * 0.62f;
-            float barH = Math.Max(6f, 6f * scale);
-            float rowH = Math.Max(barH + 10f, _hudFont.LineSpacing * powerScale);
-
-            float xRight = vp.Width - 16;
-            float yTop = Math.Min(hudH - 8 - rowH * 3, 44 + (_hudFont.LineSpacing * (scale * 0.8f)) * 2);
-            yTop = Math.Clamp(yTop, 44, Math.Max(44, hudH - 8 - rowH));
-
-            var entries = new List<(string Label, float Remaining, float Duration, Color Color)>(3);
-
-            if (_paddleWidthTimeLeft > 0.01f)
-                entries.Add(("PADDLE", _paddleWidthTimeLeft, 12f, new Color(120, 210, 255)));
-
-            if (_ballSpeedTimeLeft > 0.01f)
-            {
-                string label = _ballSpeedMultiplier < 0.99f ? "SLOW" : (_ballSpeedMultiplier > 1.01f ? "FAST" : "SPEED");
-                entries.Add((label, _ballSpeedTimeLeft, 10f, _ballSpeedMultiplier < 0.99f ? new Color(120, 235, 120) : new Color(255, 160, 90)));
-            }
-
-            if (_scoreMultiplierTimeLeft > 0.01f)
-                entries.Add(("SCORE x2", _scoreMultiplierTimeLeft, 12f, new Color(255, 210, 90)));
-
-            if (entries.Count > 0)
-            {
-                // Header
-                string header = "POWER";
-                var headerSize = _hudFont.MeasureString(header) * powerScale;
-                sb.DrawString(_hudFont, header, new Vector2(xRight - headerSize.X, yTop - rowH * 0.65f), new Color(220, 220, 220), 0f, Vector2.Zero, powerScale, SpriteEffects.None, 0f);
-
-                float y = yTop;
-                float barW = Math.Clamp(vp.Width * 0.22f, 140f, 240f);
-
-                for (int i = 0; i < entries.Count; i++)
-                {
-                    var e = entries[i];
-
-                    float pct = e.Duration <= 0.01f ? 0f : MathHelper.Clamp(e.Remaining / e.Duration, 0f, 1f);
-
-                    string text = $"{e.Label} {e.Remaining:0.0}s";
-                    text = SafeText(text);
-                    var size = _hudFont.MeasureString(text) * powerScale;
-
-                    float textX = xRight - size.X;
-                    sb.DrawString(_hudFont, text, new Vector2(textX, y), e.Color, 0f, Vector2.Zero, powerScale, SpriteEffects.None, 0f);
-
-                    // bar under the text
-                    int bx = (int)(xRight - barW);
-                    int by = (int)(y + size.Y + 2);
-                    int bw = (int)(barW);
-                    int bh = (int)(barH);
-
-                    sb.Draw(_pixel, new Rectangle(bx, by, bw, bh), new Color(255, 255, 255, 35));
-                    sb.Draw(_pixel, new Rectangle(bx, by, Math.Max(1, (int)(bw * pct)), bh), new Color((byte)e.Color.R, (byte)e.Color.G, (byte)e.Color.B, (byte)200));
-
-                    y += rowH;
-                    if (y + rowH > hudH - 5)
-                        break;
-                }
-            }
-        }
-
         // --- Pause button (top-center, under level) ---
         var pauseText = "PAUSE";
         var pauseScale = scale * 0.78f;
@@ -324,5 +238,121 @@ public sealed partial class BreakoutWorld
 
         DrawCenteredPanel(sb, vp, pauseRect, new Color(0, 0, 0, 120), new Color(255, 255, 255, 90));
         sb.DrawString(_hudFont, pauseText, new Vector2(pauseRect.X + 20, pauseRect.Y + 9), Color.White, 0f, Vector2.Zero, pauseScale, SpriteEffects.None, 0f);
+
+        // --- Active power-ups (timers) ---
+        {
+            var entries = new List<(string Label, float Remaining, float Duration, Color Color)>(3);
+
+            if (_paddleWidthTimeLeft > 0.01f)
+                entries.Add(("PADDLE", _paddleWidthTimeLeft, 12f, new Color(120, 210, 255)));
+
+            if (_ballSpeedTimeLeft > 0.01f)
+            {
+                string label = _ballSpeedMultiplier < 0.99f ? "SLOW" : (_ballSpeedMultiplier > 1.01f ? "FAST" : "SPEED");
+                entries.Add((label, _ballSpeedTimeLeft, 10f, _ballSpeedMultiplier < 0.99f ? new Color(120, 235, 120) : new Color(255, 160, 90)));
+            }
+
+            if (_scoreMultiplierTimeLeft > 0.01f)
+                entries.Add(("SCORE x2", _scoreMultiplierTimeLeft, 12f, new Color(255, 210, 90)));
+
+            if (entries.Count > 0)
+            {
+                // Anchor area: right of the pause button, but keep clear of the top-right HUD text.
+                const float padX = 14f;
+                const float padRight = 16f;
+
+                float xLeft = pauseRect.Right + padX;
+
+                // Reserve space for the mode/difficulty line so we don't collide with it.
+                // (This line is drawn at vp.Width - mdSize.X - 16.)
+                float mdRightPad = 16f;
+                float mdLeft = vp.Width - mdSize.X - mdRightPad;
+
+                // Clamp our right edge to stay left of the mode/difficulty text, with a small gap.
+                float xRightMax = Math.Min(vp.Width - padRight, mdLeft - 12f);
+
+                // If the pause button is very wide (or viewport is narrow), fall back to a safe lane.
+                if (xLeft > xRightMax - 80f)
+                {
+                    xLeft = Math.Max(padRight, pauseRect.Right + 6f);
+                    xRightMax = Math.Max(xLeft + 80f, xRightMax);
+                }
+
+                // Keep the timers from hugging the far-right edge:
+                // reserve a fixed lane width and place it immediately to the right of the pause button.
+                // This shifts the whole block left on wide screens (like in your screenshot).
+                float desiredLaneW = Math.Clamp(vp.Width * 0.22f, 170f, 260f);
+                float maxLaneW = Math.Max(80f, xRightMax - xLeft);
+                float laneW = Math.Min(desiredLaneW, maxLaneW);
+
+                float xRight = Math.Min(xRightMax, xLeft + laneW);
+                float maxPanelW = Math.Max(80f, xRight - xLeft);
+
+                // Scale down slightly if needed so all rows fit inside the HUD bar.
+                float powerScale = scale * 0.62f;
+                float barH = Math.Max(6f, 6f * scale);
+
+                float hudTop = 44f;
+                float hudBottom = hudH - 8f;
+                float availableH = Math.Max(1f, hudBottom - hudTop);
+
+                // Try a few times to make everything fit; keep it deterministic and cheap.
+                for (int attempt = 0; attempt < 6; attempt++)
+                {
+                    float rowH = Math.Max(barH + 10f, _hudFont.LineSpacing * powerScale);
+                    float needed = rowH * entries.Count + rowH * 0.65f; // + header space
+
+                    if (needed <= availableH)
+                        break;
+
+                    powerScale *= 0.9f;
+                }
+
+                float rowHFinal = Math.Max(barH + 10f, _hudFont.LineSpacing * powerScale);
+
+                // Center the block vertically within the HUD bar.
+                float blockH = rowHFinal * entries.Count;
+                float yTop = hudTop + (availableH - blockH) * 0.5f;
+                yTop = Math.Clamp(yTop, hudTop, Math.Max(hudTop, hudBottom - blockH));
+
+                // Header
+                string header = "POWER";
+                var headerSize = _hudFont.MeasureString(header) * powerScale;
+                float headerX = Math.Clamp(xRight - headerSize.X, xLeft, xRight);
+                float headerY = yTop - rowHFinal * 0.65f;
+                if (headerY >= hudTop - rowHFinal) // keep it reasonably inside the bar
+                    sb.DrawString(_hudFont, header, new Vector2(headerX, headerY), new Color(220, 220, 220), 0f, Vector2.Zero, powerScale, SpriteEffects.None, 0f);
+
+                float y = yTop;
+
+                // Bar width is bounded by available panel width so it never draws under the pause button.
+                float barW = Math.Clamp(maxPanelW, 110f, 240f);
+
+                for (int i = 0; i < entries.Count; i++)
+                {
+                    var e = entries[i];
+
+                    float pct = e.Duration <= 0.01f ? 0f : MathHelper.Clamp(e.Remaining / e.Duration, 0f, 1f);
+
+                    string text = $"{e.Label} {e.Remaining:0.0}s";
+                    text = SafeText(text);
+                    var size = _hudFont.MeasureString(text) * powerScale;
+
+                    float textX = Math.Clamp(xRight - size.X, xLeft, xRight);
+                    sb.DrawString(_hudFont, text, new Vector2(textX, y), e.Color, 0f, Vector2.Zero, powerScale, SpriteEffects.None, 0f);
+
+                    // bar under the text
+                    int bx = (int)Math.Clamp(xRight - barW, xLeft, xRight);
+                    int by = (int)(y + size.Y + 2);
+                    int bw = (int)Math.Clamp(barW, 1f, xRight - bx);
+                    int bh = (int)(barH);
+
+                    sb.Draw(_pixel, new Rectangle(bx, by, bw, bh), new Color(255, 255, 255, 35));
+                    sb.Draw(_pixel, new Rectangle(bx, by, Math.Max(1, (int)(bw * pct)), bh), new Color((byte)e.Color.R, (byte)e.Color.G, (byte)e.Color.B, (byte)200));
+
+                    y += rowHFinal;
+                }
+            }
+        }
     }
 }

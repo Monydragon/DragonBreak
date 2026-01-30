@@ -1136,49 +1136,409 @@ public sealed partial class BreakoutWorld
         if (maxY < minY)
             minY = maxY;
 
-        // Mobile: multi-touch grab + drag (X/Y). Run once per frame and let it drive any captured paddles.
-        // Use player 1's touch stream (all mobile touches are injected there currently).
-        if (inputs != null && inputs.Length > 0 && inputs[0].Touches != null && inputs[0].Touches.HasAny)
+        // --- Teamwork AI: lane ownership + multi-ball assignment + emergency takeover ---
+        int paddleCount = _paddles.Count;
+        Span<int> assignedBallByPaddle = paddleCount <= 32 ? stackalloc int[paddleCount] : new int[paddleCount];
+        for (int i = 0; i < paddleCount; i++) assignedBallByPaddle[i] = -1;
+
+        // Lane bounds per paddle (center-space): [minX..maxX] in playfield coords.
+        Span<float> laneMinByPaddle = paddleCount <= 32 ? stackalloc float[paddleCount] : new float[paddleCount];
+        Span<float> laneMaxByPaddle = paddleCount <= 32 ? stackalloc float[paddleCount] : new float[paddleCount];
+
+        if (paddleCount > 0)
         {
-            UpdateTouchDragForPaddles(inputs[0], playfield, dt, minY, maxY);
+            float slice = playfield.Width / (float)paddleCount;
+            for (int pi = 0; pi < paddleCount; pi++)
+            {
+                float minX = pi * slice;
+                float maxX = (pi + 1) * slice;
+
+                float half = _paddles[pi].Size.X * 0.5f;
+                // Convert lane bounds to safe center-space.
+                laneMinByPaddle[pi] = MathHelper.Clamp(minX + half, half, playfield.Width - half);
+                laneMaxByPaddle[pi] = MathHelper.Clamp(maxX - half, half, playfield.Width - half);
+
+                if (laneMaxByPaddle[pi] < laneMinByPaddle[pi])
+                    laneMaxByPaddle[pi] = laneMinByPaddle[pi];
+            }
         }
+
+        // Desired defend Y: if vertical movement is allowed, defend slightly above maxY to look active.
+        float desiredDefendY = MathHelper.Clamp(maxY - 14f, minY, maxY);
+
+        // Build list of active (non-serving) balls.
+        Span<int> liveBallIdx = _balls.Count <= 64 ? stackalloc int[_balls.Count] : new int[_balls.Count];
+        int liveBallCount = 0;
+        for (int bi = 0; bi < _balls.Count; bi++)
+        {
+            if (bi < _ballServing.Count && _ballServing[bi])
+                continue;
+            // Ignore parked balls.
+            if (_balls[bi].Position.X < -1000 || _balls[bi].Position.Y < -1000)
+                continue;
+            liveBallIdx[liveBallCount++] = bi;
+        }
+
+        // For each ball, find which lane owns it (by predicted intercept X at defend Y).
+        Span<int> ownerPaddleByBall = liveBallCount <= 64 ? stackalloc int[liveBallCount] : new int[liveBallCount];
+        for (int i = 0; i < liveBallCount; i++) ownerPaddleByBall[i] = -1;
+
+        for (int i = 0; i < liveBallCount; i++)
+        {
+            int bi = liveBallIdx[i];
+            float interceptX = PredictBallXAtYWithBounces(_balls[bi], desiredDefendY, playfield);
+
+            int owner = -1;
+            for (int pi = 0; pi < paddleCount; pi++)
+            {
+                if (!IsAiForPaddle(pi))
+                    continue;
+
+                if (interceptX >= laneMinByPaddle[pi] && interceptX <= laneMaxByPaddle[pi])
+                {
+                    owner = pi;
+                    break;
+                }
+            }
+
+            // If it didn't land in any AI lane, assign to nearest AI paddle by lane center.
+            if (owner < 0)
+            {
+                float best = float.PositiveInfinity;
+                for (int pi = 0; pi < paddleCount; pi++)
+                {
+                    if (!IsAiForPaddle(pi))
+                        continue;
+                    float laneCenter = (laneMinByPaddle[pi] + laneMaxByPaddle[pi]) * 0.5f;
+                    float d = Math.Abs(interceptX - laneCenter);
+                    if (d < best) { best = d; owner = pi; }
+                }
+            }
+
+            ownerPaddleByBall[i] = owner;
+        }
+
+        // Assign one ball per paddle (prefer the most urgent in that lane).
+        // Urgency = soonest time to reach defendY.
+        for (int pi = 0; pi < paddleCount; pi++)
+        {
+            if (!IsAiForPaddle(pi))
+                continue;
+
+            float bestT = float.PositiveInfinity;
+            int bestBall = -1;
+
+            for (int i = 0; i < liveBallCount; i++)
+            {
+                if (ownerPaddleByBall[i] != pi)
+                    continue;
+
+                int bi = liveBallIdx[i];
+                float vy = _balls[bi].Velocity.Y;
+                if (Math.Abs(vy) < 1e-3f)
+                    continue;
+
+                float t = (desiredDefendY - _balls[bi].Position.Y) / vy;
+                if (t <= 0f)
+                    continue;
+
+                if (t < bestT)
+                {
+                    bestT = t;
+                    bestBall = bi;
+                }
+            }
+
+            assignedBallByPaddle[pi] = bestBall;
+        }
+
+        Span<bool> allowLeaveLaneByPaddle = paddleCount <= 32 ? stackalloc bool[paddleCount] : new bool[paddleCount];
+        for (int i = 0; i < paddleCount; i++) allowLeaveLaneByPaddle[i] = false;
+
+        // Determine a single "global threat" ball (soonest time-to-defendY) for emergency.
+        int globalThreatBall = -1;
+        float globalThreatT = float.PositiveInfinity;
+        for (int i = 0; i < liveBallCount; i++)
+        {
+            int bi = liveBallIdx[i];
+            float vy = _balls[bi].Velocity.Y;
+            if (Math.Abs(vy) < 1e-3f) continue;
+            float t = (desiredDefendY - _balls[bi].Position.Y) / vy;
+            if (t > 0f && t < globalThreatT)
+            {
+                globalThreatT = t;
+                globalThreatBall = bi;
+            }
+        }
+
+        // Pick defender as the paddle that can reach globalThreatBall intercept soonest.
+        int defenderPaddleIndex = -1;
+        if (globalThreatBall >= 0)
+        {
+            float interceptX = PredictBallXAtYWithBounces(_balls[globalThreatBall], desiredDefendY, playfield);
+            float best = float.PositiveInfinity;
+            for (int pi = 0; pi < paddleCount; pi++)
+            {
+                if (!IsAiForPaddle(pi))
+                    continue;
+
+                float dist = Math.Abs(interceptX - _paddles[pi].Center.X);
+                float tReach = dist / Math.Max(1f, _preset.PaddleSpeed);
+
+                if (tReach < best)
+                {
+                    best = tReach;
+                    defenderPaddleIndex = pi;
+                }
+            }
+
+            if (defenderPaddleIndex >= 0)
+            {
+                allowLeaveLaneByPaddle[defenderPaddleIndex] = true;
+                assignedBallByPaddle[defenderPaddleIndex] = globalThreatBall;
+            }
+        }
+
+        // --- AI intent helpers (catch + vertical + brick targeting) ---
+        bool allowVertical = maxY > minY + 1f;
+        float desiredAttackY = allowVertical ? MathHelper.Clamp(minY + 40f, minY, maxY) : desiredDefendY;
+
+        // Rough estimate: should we be in "attack" posture? If no ball is coming soon, move up a little.
+        bool anyThreatSoon = globalThreatBall >= 0 && globalThreatT < 1.25f;
 
         for (int i = 0; i < _paddles.Count; i++)
         {
             float moveX = 0f;
             float moveY = 0f;
-            DragonBreakInput input = default;
+
+            bool aiCatchArm = false;
+            bool aiCatchRelease = false;
+            bool aiForceServeNow = false;
 
             if (inputs != null && i < inputs.Length)
             {
-                input = inputs[i];
-                moveX = input.MoveX;
-                moveY = input.MoveY;
+                moveX = inputs[i].MoveX;
+                moveY = inputs[i].MoveY;
             }
 
-            // If this paddle is currently being dragged by any touch, skip keyboard/controller/AI move for this frame.
             bool beingDragged = false;
             foreach (var kvp in _touchToPaddleIndex)
             {
-                if (kvp.Value == i)
-                {
-                    beingDragged = true;
-                    break;
-                }
+                if (kvp.Value == i) { beingDragged = true; break; }
             }
 
             if (beingDragged)
                 continue;
 
-            // Debug AI can take over any paddle (including >4 paddles).
-            // Human input wins if AI isn't enabled for this paddle.
             if (IsAiForPaddle(i))
             {
-                (moveX, moveY) = ComputeAiMoveForPaddle(i, playfield);
+                EnsureDebugInitialized();
+                EnsureAiArraysSized();
+
+                bool isDefender = i == defenderPaddleIndex;
+                int assignedBall = (uint)i < (uint)assignedBallByPaddle.Length ? assignedBallByPaddle[i] : -1;
+                SetAiAssignedBall(i, assignedBall);
+
+                ref var st = ref _aiStateByPaddle[i];
+
+                // Cooldowns.
+                if (st.ReleaseCooldownLeft > 0f)
+                    st.ReleaseCooldownLeft = Math.Max(0f, st.ReleaseCooldownLeft - dt);
+
+                // Decide vertical posture: defend when threat soon; otherwise creep upward to attack bricks.
+                float desiredY = (!anyThreatSoon && allowVertical) ? desiredAttackY : desiredDefendY;
+
+                // Base movement.
+                (moveX, moveY) = ComputeAiMoveForPaddle(
+                    paddleIndex: i,
+                    playfield: playfield,
+                    dt: dt,
+                    isDefender: isDefender,
+                    laneMinX: laneMinByPaddle[i],
+                    laneMaxX: laneMaxByPaddle[i],
+                    desiredDefendY: desiredY,
+                    allowLeaveLane: allowLeaveLaneByPaddle[i]);
+
+                // --- Brick targeting + aim planning ---
+                // If we're not the defender (or the threat isn't soon), pick a brick in our lane and plan an aimed release.
+                bool canAttack = !isDefender && !anyThreatSoon;
+                if (canAttack)
+                {
+                    if (st.RetargetBrickTimeLeft > 0f)
+                        st.RetargetBrickTimeLeft = Math.Max(0f, st.RetargetBrickTimeLeft - dt);
+
+                    bool needNewTarget = st.TargetBrickIndex < 0 || st.RetargetBrickTimeLeft <= 0f || st.TargetBrickIndex >= _bricks.Count || !_bricks[st.TargetBrickIndex].IsAlive;
+                    if (needNewTarget)
+                    {
+                        st.TargetBrickIndex = ChooseBrickForPaddle(i, laneMinByPaddle[i], laneMaxByPaddle[i]);
+                        // Retarget at a human-like interval.
+                        st.RetargetBrickTimeLeft = 0.9f + 0.4f * (i % 3);
+                        st.DesiredServeOffsetTimeLeft = 0f;
+                    }
+
+                    if (st.TargetBrickIndex >= 0)
+                    {
+                        // Recompute desired offset every so often (so it can adapt).
+                        if (st.DesiredServeOffsetTimeLeft <= 0f)
+                        {
+                            st.DesiredServeOffsetX = ComputeDesiredServeOffsetForBrick(i, st.TargetBrickIndex);
+                            st.DesiredServeOffsetTimeLeft = 0.35f;
+                        }
+                        else
+                        {
+                            st.DesiredServeOffsetTimeLeft = Math.Max(0f, st.DesiredServeOffsetTimeLeft - dt);
+                        }
+
+                        // When our primary ball is serving or caught, try to align our paddle under the brick aim line.
+                        if (i < _primaryBallIndexByPlayer.Count)
+                        {
+                            int pbi = _primaryBallIndexByPlayer[i];
+                            bool primaryServing = (uint)pbi < (uint)_ballServing.Count && _ballServing[pbi];
+                            bool primaryCaught = (uint)pbi < (uint)_ballCaught.Count && _ballCaught[pbi];
+
+                            if ((primaryServing || primaryCaught) && st.ReleaseCooldownLeft <= 0f)
+                            {
+                                if (TryGetAliveBrickCenter(st.TargetBrickIndex, out var brickCenter))
+                                {
+                                    float desiredCenterX = brickCenter.X - st.DesiredServeOffsetX;
+                                    float half = _paddles[i].Size.X * 0.5f;
+                                    desiredCenterX = MathHelper.Clamp(desiredCenterX, half, playfield.Width - half);
+
+                                    if (!allowLeaveLaneByPaddle[i])
+                                        desiredCenterX = MathHelper.Clamp(desiredCenterX, laneMinByPaddle[i], laneMaxByPaddle[i]);
+
+                                    float curX = _paddles[i].Center.X;
+                                    float dx = desiredCenterX - curX;
+                                    float dead = Math.Max(10f, _paddles[i].Size.X * 0.10f);
+                                    float aimMoveX = Math.Abs(dx) <= dead ? 0f : MathHelper.Clamp(dx / 150f, -1f, 1f);
+                                    moveX = MathHelper.Lerp(moveX, aimMoveX, 0.80f);
+
+                                    if (allowVertical)
+                                    {
+                                        float curY = _paddles[i].Center.Y;
+                                        float dy = desiredY - curY;
+                                        float deadY = Math.Max(6f, _paddles[i].Size.Y * 0.35f);
+                                        float aimMoveY = Math.Abs(dy) <= deadY ? 0f : MathHelper.Clamp(dy / 170f, -1f, 1f);
+                                        moveY = MathHelper.Lerp(moveY, aimMoveY, 0.65f);
+                                    }
+
+                                    bool aligned = Math.Abs(dx) <= dead * 0.9f;
+                                    if (aligned)
+                                    {
+                                        if (st.ServeDelayLeft <= 0f)
+                                            st.ServeDelayLeft = 0.08f + 0.05f * (i % 2);
+                                        st.ServeDelayLeft -= dt;
+
+                                        if (st.ServeDelayLeft <= 0f)
+                                        {
+                                            st.ServeDelayLeft = 0f;
+                                            if (primaryServing)
+                                                aiForceServeNow = true;
+                                            else
+                                                aiCatchRelease = true;
+
+                                            st.ReleaseCooldownLeft = 0.35f;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+
+                // --- AI catch behavior ---
+                // If our primary ball is currently attached/caught, hold briefly then release.
+                if (i < _primaryBallIndexByPlayer.Count)
+                {
+                    int pbi = _primaryBallIndexByPlayer[i];
+                    if ((uint)pbi < (uint)_ballServing.Count && _ballServing[pbi])
+                    {
+                        // Serving: handled below via aiForceServeNow/AiShouldAutoServe.
+                    }
+                    else
+                    {
+                        if ((uint)pbi < (uint)_ballCaught.Count && _ballCaught[pbi])
+                        {
+                            if (!aiCatchRelease)
+                            {
+                                if (st.ServeDelayLeft <= 0f)
+                                    st.ServeDelayLeft = 0.20f + 0.10f * (i % 3);
+                                st.ServeDelayLeft -= dt;
+                                if (st.ServeDelayLeft <= 0f)
+                                {
+                                    st.ServeDelayLeft = 0f;
+                                    aiCatchRelease = true;
+                                }
+                            }
+                        }
+                        else
+                        {
+                            int bi = assignedBall;
+                            if (bi >= 0 && (uint)bi < (uint)_balls.Count && (uint)bi < (uint)_ballServing.Count && !_ballServing[bi])
+                            {
+                                var b = _balls[bi];
+                                float vy = b.Velocity.Y;
+                                if (Math.Abs(vy) > 1e-3f)
+                                {
+                                    float t = (desiredDefendY - b.Position.Y) / vy;
+                                    if (t > 0.05f && t < 0.35f)
+                                    {
+                                        float interceptX = PredictBallXAtYWithBounces(b, desiredDefendY, playfield);
+                                        if (interceptX >= laneMinByPaddle[i] && interceptX <= laneMaxByPaddle[i])
+                                            aiCatchArm = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Apply AI catch decisions directly into the catch state.
+                if (aiCatchArm && i < _catchArmedByPlayer.Count)
+                {
+                    _catchArmedByPlayer[i] = true;
+                    if (i < _catchArmedConsumedByPlayer.Count)
+                        _catchArmedConsumedByPlayer[i] = false;
+                }
+
+                if ((aiCatchRelease || aiForceServeNow) && i < _primaryBallIndexByPlayer.Count)
+                {
+                    int bi = _primaryBallIndexByPlayer[i];
+                    if ((uint)bi < (uint)_ballServing.Count && _ballServing[bi])
+                    {
+                        Serve(bi);
+                        if (bi < _ballCaught.Count) _ballCaught[bi] = false;
+                    }
+                    else
+                    {
+                        if (bi < _ballCaught.Count) _ballCaught[bi] = false;
+                    }
+
+                    if (i < _catchArmedByPlayer.Count)
+                    {
+                        _catchArmedByPlayer[i] = false;
+                        if (i < _catchArmedConsumedByPlayer.Count)
+                            _catchArmedConsumedByPlayer[i] = false;
+                    }
+                }
+
+                // If we didn't explicitly aim-release, fall back to auto-serve.
+                if (!aiForceServeNow && AiShouldAutoServe(i, dt))
+                {
+                    int bi = i < _primaryBallIndexByPlayer.Count ? _primaryBallIndexByPlayer[i] : -1;
+                    if ((uint)bi < (uint)_ballServing.Count && _ballServing[bi])
+                    {
+                        Serve(bi);
+                        if (bi < _ballCaught.Count) _ballCaught[bi] = false;
+                    }
+                }
             }
 
             _paddles[i].Update(dt, moveX, moveY, playfield.Width, minY, maxY);
         }
+
+        ResolveAiPaddleOverlaps(playfield);
 
         UpdatePowerUps(dt, playfield);
 

@@ -1156,7 +1156,7 @@ public sealed partial class BreakoutWorld
                 moveY = input.MoveY;
             }
 
-            // If this paddle is currently being dragged by any touch, skip keyboard/controller move for this frame.
+            // If this paddle is currently being dragged by any touch, skip keyboard/controller/AI move for this frame.
             bool beingDragged = false;
             foreach (var kvp in _touchToPaddleIndex)
             {
@@ -1169,6 +1169,13 @@ public sealed partial class BreakoutWorld
 
             if (beingDragged)
                 continue;
+
+            // Debug AI can take over any paddle (including >4 paddles).
+            // Human input wins if AI isn't enabled for this paddle.
+            if (IsAiForPaddle(i))
+            {
+                (moveX, moveY) = ComputeAiMoveForPaddle(i, playfield);
+            }
 
             _paddles[i].Update(dt, moveX, moveY, playfield.Width, minY, maxY);
         }
@@ -1479,6 +1486,16 @@ public sealed partial class BreakoutWorld
                         }
                         break;
 
+                    case PauseMenuScreen.PauseAction.DebugToggleAiDebugOverlay:
+                        if (debug)
+                        {
+                            EnsureDebugInitialized();
+                            _debugDrawAi = !_debugDrawAi;
+                            ShowToast($"AI OVERLAY: {(_debugDrawAi ? "ON" : "OFF")}", ToastDurationSeconds);
+                            return;
+                        }
+                        break;
+
                     case PauseMenuScreen.PauseAction.DebugCompleteLevel:
                         if (debug)
                         {
@@ -1591,6 +1608,15 @@ public sealed partial class BreakoutWorld
                     EnsureDebugInitialized();
                     _aiAllPaddles = !_aiAllPaddles;
                     ShowToast($"AI ALL: {(_aiAllPaddles ? "ON" : "OFF")}", ToastDurationSeconds);
+                }
+                break;
+
+            case PauseMenuScreen.PauseAction.DebugToggleAiDebugOverlay:
+                if (debug)
+                {
+                    EnsureDebugInitialized();
+                    _debugDrawAi = !_debugDrawAi;
+                    ShowToast($"AI OVERLAY: {(_debugDrawAi ? "ON" : "OFF")}", ToastDurationSeconds);
                 }
                 break;
 

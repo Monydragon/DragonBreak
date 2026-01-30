@@ -65,6 +65,38 @@ public sealed partial class BreakoutWorld
         for (int i = 0; i < _paddles.Count; i++)
             sb.Draw(_pixel, _paddles[i].Bounds, PlayerBaseColors[Math.Clamp(i, 0, PlayerBaseColors.Length - 1)]);
 
+        // --- Debug: AI overlay (playfield-local draw) ---
+        bool debug = (_settings?.Current.Gameplay ?? Settings.GameplaySettings.Default).DebugMode;
+        if (debug && _debugDrawAi)
+        {
+            EnsureAiArraysSized();
+
+            for (int i = 0; i < _paddles.Count; i++)
+            {
+                if (!IsAiForPaddle(i))
+                    continue;
+
+                // Target marker
+                if ((uint)i < (uint)_aiLastTargetByPaddle.Length)
+                {
+                    var t = _aiLastTargetByPaddle[i];
+                    int tx = (int)MathF.Round(t.X);
+                    int ty = (int)MathF.Round(t.Y);
+                    var rect = new Rectangle(tx - 3, ty - 3, 7, 7);
+                    sb.Draw(_pixel, rect, Color.Yellow);
+                }
+
+                // Label
+                if (_hudFont != null)
+                {
+                    string label = $"AI P{i + 1}";
+                    float s = 0.65f;
+                    var pos = new Vector2(_paddles[i].Bounds.X, Math.Max(0, _paddles[i].Bounds.Y - (_hudFont.LineSpacing * s) - 2));
+                    sb.DrawString(_hudFont, label, pos, Color.Yellow, 0f, Vector2.Zero, s, SpriteEffects.None, 0f);
+                }
+            }
+        }
+
         // Balls
         for (int i = 0; i < _balls.Count; i++)
             sb.Draw(_pixel, _balls[i].Bounds, _balls[i].DrawColor ?? Color.White);

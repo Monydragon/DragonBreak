@@ -15,9 +15,15 @@ public sealed partial class BreakoutWorld
     private int _debugPendingJumpLevel = 1; // 1-based for UI friendliness
     private int _debugPowerUpIndex;
 
-    // AI control (debug): per-player + auto mode.
-    private readonly bool[] _aiControlledByPlayer = new bool[4];
+    // AI control (debug): per-paddle + auto mode.
+    private bool[] _aiControlledByPaddle = Array.Empty<bool>();
     private bool _aiAllPaddles;
+
+    // AI debug overlay.
+    private bool _debugDrawAi;
+
+    // Per-paddle: last AI target point (playfield-local) for debug draw.
+    private Vector2[] _aiLastTargetByPaddle = Array.Empty<Vector2>();
 
     // Keep track of whether we already initialized our debug arrays for the current run.
     private bool _debugInitialized;
@@ -27,50 +33,94 @@ public sealed partial class BreakoutWorld
         if (_debugInitialized)
             return;
 
-        for (int i = 0; i < _aiControlledByPlayer.Length; i++)
-            _aiControlledByPlayer[i] = false;
+        _aiControlledByPaddle = Array.Empty<bool>();
+        _aiLastTargetByPaddle = Array.Empty<Vector2>();
 
         _aiAllPaddles = false;
+        _debugDrawAi = false;
         _debugPendingJumpLevel = 1;
         _debugPowerUpIndex = 0;
 
         _debugInitialized = true;
     }
 
-    private bool IsAiForPlayer(int playerIndex)
+    private void EnsureAiArraysSized()
     {
+        EnsureDebugInitialized();
+
+        int n = _paddles.Count;
+        if (n <= 0)
+        {
+            _aiControlledByPaddle = Array.Empty<bool>();
+            _aiLastTargetByPaddle = Array.Empty<Vector2>();
+            return;
+        }
+
+        if (_aiControlledByPaddle.Length != n)
+        {
+            var old = _aiControlledByPaddle;
+            _aiControlledByPaddle = new bool[n];
+            for (int i = 0; i < Math.Min(old.Length, n); i++)
+                _aiControlledByPaddle[i] = old[i];
+        }
+
+        if (_aiLastTargetByPaddle.Length != n)
+        {
+            var old = _aiLastTargetByPaddle;
+            _aiLastTargetByPaddle = new Vector2[n];
+            for (int i = 0; i < Math.Min(old.Length, n); i++)
+                _aiLastTargetByPaddle[i] = old[i];
+        }
+    }
+
+    private bool IsAiForPaddle(int paddleIndex)
+    {
+        EnsureAiArraysSized();
+
         if (_aiAllPaddles)
             return true;
 
-        if ((uint)playerIndex >= (uint)_aiControlledByPlayer.Length)
+        if ((uint)paddleIndex >= (uint)_aiControlledByPaddle.Length)
             return false;
 
-        // Requested: AI controlled paddles other than player 1.
-        if (playerIndex == 0)
-            return false;
-
-        return _aiControlledByPlayer[playerIndex];
+        // Default behavior: keep paddle 0 as human unless explicitly set to AI.
+        return _aiControlledByPaddle[paddleIndex];
     }
 
-    private void ToggleAiForPlayer(int playerIndex)
+    private void ToggleAiForPaddle(int paddleIndex)
     {
-        if ((uint)playerIndex >= (uint)_aiControlledByPlayer.Length)
-            return;
-        if (playerIndex == 0)
+        EnsureAiArraysSized();
+
+        if ((uint)paddleIndex >= (uint)_aiControlledByPaddle.Length)
             return;
 
-        _aiControlledByPlayer[playerIndex] = !_aiControlledByPlayer[playerIndex];
+        _aiControlledByPaddle[paddleIndex] = !_aiControlledByPaddle[paddleIndex];
     }
+
+    // Backwards-compat wrappers (pause menu still uses P2/P3/P4 labels).
+    private bool IsAiForPlayer(int playerIndex) => IsAiForPaddle(playerIndex);
+    private void ToggleAiForPlayer(int playerIndex) => ToggleAiForPaddle(playerIndex);
 
     private (float MoveX, float MoveY) ComputeAiMoveForPaddle(int paddleIndex, Viewport playfield)
     {
+        EnsureAiArraysSized();
+
         if ((uint)paddleIndex >= (uint)_paddles.Count)
             return (0f, 0f);
 
-        // Find the nearest incoming ball; fall back to nearest ball.
-        float targetX = _paddles[paddleIndex].Center.X;
-        float best = float.PositiveInfinity;
-        bool foundIncoming = false;
+        // Choose a target point for this paddle.
+        // Strategy:
+        // 1) Prefer an incoming ball (moving toward the paddle area).
+        // 2) Aim for the predicted X intercept when the ball reaches the paddle's Y.
+        // 3) Also bias Y toward the ball's Y when the paddle isn't at the bottom (future-proof for multi-side paddles).
+
+        var paddle = _paddles[paddleIndex];
+
+        Vector2 target = paddle.Center;
+        float bestScore = float.PositiveInfinity;
+        bool found = false;
+
+        float paddleY = paddle.Center.Y;
 
         for (int i = 0; i < _balls.Count; i++)
         {
@@ -78,37 +128,69 @@ public sealed partial class BreakoutWorld
                 continue;
 
             var b = _balls[i];
-            bool incoming = b.Velocity.Y > 10f;
-            float d = Vector2.DistanceSquared(b.Position, _paddles[paddleIndex].Center);
 
-            if (incoming)
+            // "Incoming" means the ball is moving toward the paddle's Y.
+            // If paddle is below the ball, incoming is downward; if above, incoming is upward.
+            float dyToPaddle = paddleY - b.Position.Y;
+            bool incoming = (b.Velocity.Y * dyToPaddle) > 0f && MathF.Abs(b.Velocity.Y) > 8f;
+
+            // Predict intercept at paddleY if possible.
+            float t = 0f;
+            bool hasIntercept = MathF.Abs(b.Velocity.Y) > 1e-3f;
+            if (hasIntercept)
+                t = (paddleY - b.Position.Y) / b.Velocity.Y;
+
+            // If intercept time is negative, ball is moving away.
+            if (hasIntercept && t < 0f)
+                hasIntercept = false;
+
+            float predictedX = b.Position.X;
+            if (hasIntercept)
             {
-                if (!foundIncoming || d < best)
-                {
-                    best = d;
-                    targetX = b.Position.X;
-                    foundIncoming = true;
-                }
+                predictedX = b.Position.X + b.Velocity.X * t;
+                predictedX = MathHelper.Clamp(predictedX, b.Radius, playfield.Width - b.Radius);
             }
-            else if (!foundIncoming && d < best)
+
+            // Build a target. If we can intercept, aim at intercept X on our Y; else chase ball.
+            Vector2 candidateTarget = hasIntercept
+                ? new Vector2(predictedX, paddleY)
+                : b.Position;
+
+            // Score candidates: prefer incoming, then shorter distance to paddle.
+            float d = Vector2.DistanceSquared(candidateTarget, paddle.Center);
+            float score = d + (incoming ? 0f : 2_000_000f);
+
+            if (!found || score < bestScore)
             {
-                best = d;
-                targetX = b.Position.X;
+                found = true;
+                bestScore = score;
+                target = candidateTarget;
             }
         }
 
-        float dx = targetX - _paddles[paddleIndex].Center.X;
-        float dead = Math.Max(6f, _paddles[paddleIndex].Size.X * 0.06f);
+        // If no balls exist, just drift toward a sane default (near bottom).
+        if (!found)
+            target = new Vector2(paddle.Center.X, playfield.Height - PaddleBottomPaddingPixels);
 
-        float moveX = Math.Abs(dx) <= dead ? 0f : MathHelper.Clamp(dx / 120f, -1f, 1f);
+        if ((uint)paddleIndex < (uint)_aiLastTargetByPaddle.Length)
+            _aiLastTargetByPaddle[paddleIndex] = target;
 
-        // Keep paddles near the bottom.
-        float desiredY = playfield.Height - PaddleBottomPaddingPixels;
-        float dy = desiredY - _paddles[paddleIndex].Center.Y;
-        float moveY = MathHelper.Clamp(dy / 140f, -0.35f, 0.35f);
+        // Convert target into normalized move inputs (-1..1 each).
+        float dx = target.X - paddle.Center.X;
+        float dy = target.Y - paddle.Center.Y;
+
+        float deadX = Math.Max(6f, paddle.Size.X * 0.06f);
+        float deadY = Math.Max(4f, paddle.Size.Y * 0.20f);
+
+        float moveX = Math.Abs(dx) <= deadX ? 0f : MathHelper.Clamp(dx / 120f, -1f, 1f);
+        float moveY = Math.Abs(dy) <= deadY ? 0f : MathHelper.Clamp(dy / 120f, -1f, 1f);
+
+        // Mild vertical damping so AI doesn't jitter when it only needs tiny Y corrections.
+        moveY = MathHelper.Clamp(moveY, -0.75f, 0.75f);
 
         return (moveX, moveY);
     }
+
 
     private static PowerUpType[] DebugPowerUpOrder =>
     [

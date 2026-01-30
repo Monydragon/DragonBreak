@@ -25,6 +25,7 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
         DebugToggleAiP3,
         DebugToggleAiP4,
         DebugToggleAiAll,
+        DebugToggleAiDebugOverlay,
     }
 
     private int _selectedIndex;
@@ -67,6 +68,7 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
             items.Add(("[Debug] Toggle AI P3", PauseAction.DebugToggleAiP3));
             items.Add(("[Debug] Toggle AI P4", PauseAction.DebugToggleAiP4));
             items.Add(("[Debug] Toggle AI ALL", PauseAction.DebugToggleAiAll));
+            items.Add(("[Debug] Toggle AI Overlay", PauseAction.DebugToggleAiDebugOverlay));
         }
 
         return items;

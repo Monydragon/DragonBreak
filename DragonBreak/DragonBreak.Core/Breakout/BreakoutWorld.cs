@@ -105,6 +105,9 @@ public sealed partial class BreakoutWorld
         HighScores,
         NameEntry,
         GameOver,
+
+        // Debug-only
+        DebugJumpLevel,
     }
 
     private readonly struct DifficultyPreset
@@ -722,6 +725,13 @@ public sealed partial class BreakoutWorld
         {
             ClearTouchDragState();
             UpdateLevelInterstitial(inputs, vp, dt);
+            return;
+        }
+
+        if (_mode == WorldMode.DebugJumpLevel)
+        {
+            ClearTouchDragState();
+            UpdateDebugJumpLevel(inputs, vp, dt);
             return;
         }
 
@@ -1384,6 +1394,9 @@ public sealed partial class BreakoutWorld
     {
         bool debug = (_settings?.Current.Gameplay ?? GameplaySettings.Default).DebugMode;
 
+        // Ensure pause menu shows/hides debug items properly.
+        _pauseMenu.SetDebugEnabled(debug);
+
         // Touch: tap on pause menu items.
         if (inputs != null && inputs.Length > 0)
         {
@@ -1412,6 +1425,59 @@ public sealed partial class BreakoutWorld
                         _mode = WorldMode.Menu;
                         _menuItem = MenuItem.Start;
                         return;
+
+                    case PauseMenuScreen.PauseAction.DebugJumpToLevel:
+                        if (debug)
+                        {
+                            EnterDebugJumpLevel(WorldMode.Paused);
+                            return;
+                        }
+                        break;
+
+                    case PauseMenuScreen.PauseAction.DebugSpawnPowerUp:
+                        if (debug)
+                        {
+                            DebugSpawnSelectedPowerUp(vp);
+                            return;
+                        }
+                        break;
+
+                    case PauseMenuScreen.PauseAction.DebugToggleAiP2:
+                        if (debug)
+                        {
+                            ToggleAiForPlayer(1);
+                            ShowToast($"AI P2: {(IsAiForPlayer(1) ? "ON" : "OFF")}", ToastDurationSeconds);
+                            return;
+                        }
+                        break;
+
+                    case PauseMenuScreen.PauseAction.DebugToggleAiP3:
+                        if (debug)
+                        {
+                            ToggleAiForPlayer(2);
+                            ShowToast($"AI P3: {(IsAiForPlayer(2) ? "ON" : "OFF")}", ToastDurationSeconds);
+                            return;
+                        }
+                        break;
+
+                    case PauseMenuScreen.PauseAction.DebugToggleAiP4:
+                        if (debug)
+                        {
+                            ToggleAiForPlayer(3);
+                            ShowToast($"AI P4: {(IsAiForPlayer(3) ? "ON" : "OFF")}", ToastDurationSeconds);
+                            return;
+                        }
+                        break;
+
+                    case PauseMenuScreen.PauseAction.DebugToggleAiAll:
+                        if (debug)
+                        {
+                            EnsureDebugInitialized();
+                            _aiAllPaddles = !_aiAllPaddles;
+                            ShowToast($"AI ALL: {(_aiAllPaddles ? "ON" : "OFF")}", ToastDurationSeconds);
+                            return;
+                        }
+                        break;
 
                     case PauseMenuScreen.PauseAction.DebugCompleteLevel:
                         if (debug)
@@ -1483,6 +1549,49 @@ public sealed partial class BreakoutWorld
             case PauseMenuScreen.PauseAction.MainMenu:
                 _mode = WorldMode.Menu;
                 _menuItem = MenuItem.Start;
+                break;
+
+            case PauseMenuScreen.PauseAction.DebugJumpToLevel:
+                if (debug)
+                    EnterDebugJumpLevel(WorldMode.Paused);
+                break;
+
+            case PauseMenuScreen.PauseAction.DebugSpawnPowerUp:
+                if (debug)
+                    DebugSpawnSelectedPowerUp(vp);
+                break;
+
+            case PauseMenuScreen.PauseAction.DebugToggleAiP2:
+                if (debug)
+                {
+                    ToggleAiForPlayer(1);
+                    ShowToast($"AI P2: {(IsAiForPlayer(1) ? "ON" : "OFF")}", ToastDurationSeconds);
+                }
+                break;
+
+            case PauseMenuScreen.PauseAction.DebugToggleAiP3:
+                if (debug)
+                {
+                    ToggleAiForPlayer(2);
+                    ShowToast($"AI P3: {(IsAiForPlayer(2) ? "ON" : "OFF")}", ToastDurationSeconds);
+                }
+                break;
+
+            case PauseMenuScreen.PauseAction.DebugToggleAiP4:
+                if (debug)
+                {
+                    ToggleAiForPlayer(3);
+                    ShowToast($"AI P4: {(IsAiForPlayer(3) ? "ON" : "OFF")}", ToastDurationSeconds);
+                }
+                break;
+
+            case PauseMenuScreen.PauseAction.DebugToggleAiAll:
+                if (debug)
+                {
+                    EnsureDebugInitialized();
+                    _aiAllPaddles = !_aiAllPaddles;
+                    ShowToast($"AI ALL: {(_aiAllPaddles ? "ON" : "OFF")}", ToastDurationSeconds);
+                }
                 break;
 
             case PauseMenuScreen.PauseAction.DebugCompleteLevel:

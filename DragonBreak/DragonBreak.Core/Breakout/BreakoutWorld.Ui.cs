@@ -47,7 +47,7 @@ public sealed partial class BreakoutWorld
         float scale = ui.HudScale;
 
         // Main menu should NOT show gameplay/background. Keep it clean.
-        if (_mode == WorldMode.Menu || _mode == WorldMode.Settings || _mode == WorldMode.HighScores || _mode == WorldMode.NameEntry || _mode == WorldMode.GameOver || _mode == WorldMode.LevelInterstitial || _mode == WorldMode.Paused)
+        if (_mode == WorldMode.Menu || _mode == WorldMode.Settings || _mode == WorldMode.HighScores || _mode == WorldMode.NameEntry || _mode == WorldMode.GameOver || _mode == WorldMode.LevelInterstitial || _mode == WorldMode.Paused || _mode == WorldMode.DebugJumpLevel)
         {
             sb.Draw(_pixel, new Rectangle(0, 0, vp.Width, vp.Height), new Color(10, 10, 14));
         }
@@ -71,6 +71,9 @@ public sealed partial class BreakoutWorld
             case WorldMode.Paused:
                 DrawPausedMenu(sb, vp, scale);
                 break;
+            case WorldMode.DebugJumpLevel:
+                DrawDebugJumpLevelMenu(sb, vp, scale);
+                break;
             case WorldMode.HighScores:
                 DrawHighScoresMenu(sb, vp, scale);
                 break;
@@ -83,7 +86,7 @@ public sealed partial class BreakoutWorld
         }
 
         // Draw back button on touch-first screens.
-        if (_mode is WorldMode.Settings or WorldMode.HighScores or WorldMode.Paused)
+        if (_mode is WorldMode.Settings or WorldMode.HighScores or WorldMode.Paused or WorldMode.DebugJumpLevel)
             DrawBackButton(sb, vp, GetMenuScale(vp, scale));
 
         // Power-up toast during gameplay and pause.
@@ -205,6 +208,27 @@ public sealed partial class BreakoutWorld
             lines.Add((SafeText(text).ToUpperInvariant(), selected));
 
         DrawMenuLines(sb, vp, lines, GetMenuScale(vp, scale) * 0.90f);
+    }
+
+    private void DrawDebugJumpLevelMenu(SpriteBatch sb, Viewport vp, float scale)
+    {
+        if (_hudFont == null)
+            return;
+
+        float menuScale = GetMenuScale(vp, scale);
+
+        var (l1, l2, l3) = _debugJumpLevelScreen.GetPromptLines();
+
+        var lines = new List<(string Text, bool Selected)>
+        {
+            (l1, false),
+            (l2, false),
+            (l3, false),
+            ("", false),
+            ("Touch: left/right = +/-1   top/bottom = +/-10   center = confirm", false),
+        };
+
+        DrawMenuLines(sb, vp, lines, menuScale);
     }
 
     // --- Input / menu update (minimal, compiling) ---

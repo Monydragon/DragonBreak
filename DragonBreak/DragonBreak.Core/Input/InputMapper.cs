@@ -158,6 +158,8 @@ public sealed class InputMapper
                            || (prevPad.IsConnected && prevPad.Buttons.Back == ButtonState.Pressed);
 
         // Menu navigation (keyboard is shared; allow arrows/WASD/IJKL)
+        // IMPORTANT: menuMoveY is defined as +1 = Up, -1 = Down.
+        // Keep MenuUpHeld/MenuDownHeld consistent with that.
         bool menuUpDown = KeyboardMenuUp(keyboard)
                           || (pad.IsConnected && pad.DPad.Up == ButtonState.Pressed);
         bool menuUpWasDown = KeyboardMenuUp(_prevKeyboard)

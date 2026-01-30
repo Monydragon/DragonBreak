@@ -19,6 +19,12 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
         // Debug-only
         DebugCompleteLevel,
         DebugRestartGame,
+        DebugJumpToLevel,
+        DebugSpawnPowerUp,
+        DebugToggleAiP2,
+        DebugToggleAiP3,
+        DebugToggleAiP4,
+        DebugToggleAiAll,
     }
 
     private int _selectedIndex;
@@ -55,6 +61,12 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
         {
             items.Add(("[Debug] Complete Level", PauseAction.DebugCompleteLevel));
             items.Add(("[Debug] Restart Game", PauseAction.DebugRestartGame));
+            items.Add(("[Debug] Jump To Level...", PauseAction.DebugJumpToLevel));
+            items.Add(("[Debug] Spawn PowerUp", PauseAction.DebugSpawnPowerUp));
+            items.Add(("[Debug] Toggle AI P2", PauseAction.DebugToggleAiP2));
+            items.Add(("[Debug] Toggle AI P3", PauseAction.DebugToggleAiP3));
+            items.Add(("[Debug] Toggle AI P4", PauseAction.DebugToggleAiP4));
+            items.Add(("[Debug] Toggle AI ALL", PauseAction.DebugToggleAiAll));
         }
 
         return items;

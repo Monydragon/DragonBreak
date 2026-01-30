@@ -338,49 +338,8 @@ public sealed partial class BreakoutWorld
 
     private SettingsItem _settingsItem = SettingsItem.WindowMode;
 
-    // Settings UI is currently a simplified list (not all enum items are shown).
-    // Keep navigation consistent with what we render by tracking a selection index
-    // over the visible items instead of wrapping over every enum value.
+    // Settings navigation selection index for the visible items list (see BreakoutWorld.Ui.cs).
     private int _settingsSelectedIndex;
-
-    private static readonly SettingsItem[] SettingsMenuItemsTopToBottom =
-    [
-        SettingsItem.WindowMode,
-        SettingsItem.Resolution,
-        SettingsItem.VSync,
-        SettingsItem.MasterVolume,
-        SettingsItem.BgmVolume,
-        SettingsItem.SfxVolume,
-        SettingsItem.HudEnabled,
-        SettingsItem.HudScale,
-        SettingsItem.ContinueMode,
-        SettingsItem.AutoContinueSeconds,
-        SettingsItem.LevelSeed,
-        SettingsItem.LevelSeedRandomize,
-        SettingsItem.LevelSeedReset,
-        SettingsItem.DebugMode,
-        SettingsItem.Apply,
-        SettingsItem.Cancel,
-    ];
-
-    private void SyncSettingsSelectedIndexFromItem()
-    {
-        int idx = Array.IndexOf(SettingsMenuItemsTopToBottom, _settingsItem);
-        _settingsSelectedIndex = idx >= 0 ? idx : 0;
-        _settingsItem = SettingsMenuItemsTopToBottom[Math.Clamp(_settingsSelectedIndex, 0, SettingsMenuItemsTopToBottom.Length - 1)];
-    }
-
-    private void SyncSettingsItemFromSelectedIndex()
-    {
-        if (SettingsMenuItemsTopToBottom.Length == 0)
-        {
-            _settingsSelectedIndex = 0;
-            return;
-        }
-
-        _settingsSelectedIndex = Math.Clamp(_settingsSelectedIndex, 0, SettingsMenuItemsTopToBottom.Length - 1);
-        _settingsItem = SettingsMenuItemsTopToBottom[_settingsSelectedIndex];
-    }
 
     // Cached resolution list (once graphics device exists)
     private List<ResolutionOption> _resolutions = new();
@@ -781,19 +740,62 @@ public sealed partial class BreakoutWorld
                 return;
             }
 
-            // Touch back button
-            if (inputs != null && inputs.Length > 0 && inputs[0].Touches.TryGetBegan(out var backTap) && backTap.IsTap)
+            // Touch support: back button + simple page controls.
+            if (inputs is { Length: > 0 } && inputs[0].Touches.TryGetBegan(out var tap) && tap.IsTap)
             {
-                float x = backTap.X01 * vp.Width;
-                float y = backTap.Y01 * vp.Height;
+                float x = tap.X01 * vp.Width;
+                float y = tap.Y01 * vp.Height;
+
                 if (GetBackButtonRectForTouch(vp).Contains((int)x, (int)y))
                 {
                     _mode = _returnModeAfterHighScores;
                     return;
                 }
+
+                if (_hudFont != null)
+                {
+                    var ui = _settings?.Current.Ui ?? UiSettings.Default;
+                    float menuScale = GetMenuScale(vp, ui.HudScale) * 0.95f;
+                    float lineH = _hudFont.LineSpacing * menuScale;
+
+                    // Build lines to size the panel similarly to DrawMenuLines.
+                    var lines = new List<(string Text, bool Selected)>();
+                    foreach (var line in _highScoresScreen.GetLines(vp))
+                        lines.Add(line);
+
+                    var panel = GetMenuPanelRect(vp, lines.Count, lineH);
+                    if (panel.Contains((int)x, (int)y))
+                    {
+                        // Left side = page up, right side = page down.
+                        if (x < panel.X + panel.Width * 0.33f)
+                        {
+                            var fake = new DragonBreakInput(
+                                moveX: 0,
+                                moveY: 0,
+                                servePressed: false,
+                                pausePressed: false,
+                                exitPressed: false,
+                                menuLeftHeld: true,
+                                menuMoveX: -1f);
+                            _highScoresScreen.Update(new[] { fake }, vp, dt);
+                        }
+                        else if (x > panel.X + panel.Width * 0.66f)
+                        {
+                            var fake = new DragonBreakInput(
+                                moveX: 0,
+                                moveY: 0,
+                                servePressed: false,
+                                pausePressed: false,
+                                exitPressed: false,
+                                menuRightHeld: true,
+                                menuMoveX: 1f);
+                            _highScoresScreen.Update(new[] { fake }, vp, dt);
+                        }
+                    }
+                }
             }
 
-            _highScoresScreen.Update(inputs, vp, dt);
+            _highScoresScreen.Update(inputs ?? Array.Empty<DragonBreakInput>(), vp, dt);
             if (_highScoresScreen.ConsumeAction() == HighScoresScreen.HighScoresAction.Back)
             {
                 _mode = _returnModeAfterHighScores;
@@ -809,7 +811,78 @@ public sealed partial class BreakoutWorld
                 return;
             }
 
-            _nameEntryScreen.Update(inputs, vp, dt);
+            // Touch support: back button (skip) and tap left/right side of panel to delete/add picker char.
+            if (inputs is { Length: > 0 } && inputs[0].Touches.TryGetBegan(out var tap) && tap.IsTap)
+            {
+                float x = tap.X01 * vp.Width;
+                float y = tap.Y01 * vp.Height;
+
+                if (GetBackButtonRectForTouch(vp).Contains((int)x, (int)y))
+                {
+                    // Treat as cancel/skip.
+                    var fake = new DragonBreakInput(
+                        moveX: 0,
+                        moveY: 0,
+                        servePressed: false,
+                        pausePressed: false,
+                        exitPressed: false,
+                        menuBackPressed: true);
+                    _nameEntryScreen.Update(new[] { fake }, vp, dt);
+                }
+                else if (_hudFont != null)
+                {
+                    var ui = _settings?.Current.Ui ?? UiSettings.Default;
+                    float menuScale = GetMenuScale(vp, ui.HudScale) * 0.95f;
+                    float lineH = _hudFont.LineSpacing * menuScale;
+
+                    var lines = new List<(string Text, bool Selected)>();
+                    foreach (var line in _nameEntryScreen.GetLines(vp))
+                        lines.Add(line);
+
+                    var panel = GetMenuPanelRect(vp, lines.Count, lineH);
+                    if (panel.Contains((int)x, (int)y))
+                    {
+                        if (x < panel.X + panel.Width * 0.33f)
+                        {
+                            var fake = new DragonBreakInput(
+                                moveX: 0,
+                                moveY: 0,
+                                servePressed: false,
+                                pausePressed: false,
+                                exitPressed: false,
+                                menuLeftHeld: true,
+                                menuMoveX: -1f);
+                            _nameEntryScreen.Update(new[] { fake }, vp, dt);
+                        }
+                        else if (x > panel.X + panel.Width * 0.66f)
+                        {
+                            var fake = new DragonBreakInput(
+                                moveX: 0,
+                                moveY: 0,
+                                servePressed: false,
+                                pausePressed: false,
+                                exitPressed: false,
+                                menuRightHeld: true,
+                                menuMoveX: 1f);
+                            _nameEntryScreen.Update(new[] { fake }, vp, dt);
+                        }
+                        else
+                        {
+                            // Center tap = submit.
+                            var fake = new DragonBreakInput(
+                                moveX: 0,
+                                moveY: 0,
+                                servePressed: false,
+                                pausePressed: false,
+                                exitPressed: false,
+                                menuConfirmPressed: true);
+                            _nameEntryScreen.Update(new[] { fake }, vp, dt);
+                        }
+                    }
+                }
+            }
+
+            _nameEntryScreen.Update(inputs ?? Array.Empty<DragonBreakInput>(), vp, dt);
             switch (_nameEntryScreen.ConsumeAction())
             {
                 case NameEntryScreen.NameEntryAction.Submitted:
@@ -912,7 +985,7 @@ public sealed partial class BreakoutWorld
                 }
             }
 
-            _gameOverScreen.Update(inputs, vp, dt);
+            _gameOverScreen.Update(inputs ?? Array.Empty<DragonBreakInput>(), vp, dt);
             switch (_gameOverScreen.ConsumeAction())
             {
                 case GameOverScreen.GameOverAction.Retry:
@@ -925,6 +998,16 @@ public sealed partial class BreakoutWorld
                     break;
             }
             return;
+        }
+
+        // --- Gameplay pause (controller Start / keyboard P) ---
+        if (_mode == WorldMode.Playing)
+        {
+            if (inputs != null && AnyPausePressed(inputs))
+            {
+                EnterPaused();
+                return;
+            }
         }
 
         // Gameplay uses the playfield viewport (below the HUD bar).
@@ -1299,6 +1382,8 @@ public sealed partial class BreakoutWorld
 
     private void UpdatePaused(DragonBreakInput[] inputs, Viewport vp, float dt)
     {
+        bool debug = (_settings?.Current.Gameplay ?? GameplaySettings.Default).DebugMode;
+
         // Touch: tap on pause menu items.
         if (inputs != null && inputs.Length > 0)
         {
@@ -1327,6 +1412,24 @@ public sealed partial class BreakoutWorld
                         _mode = WorldMode.Menu;
                         _menuItem = MenuItem.Start;
                         return;
+
+                    case PauseMenuScreen.PauseAction.DebugCompleteLevel:
+                        if (debug)
+                        {
+                            ExitPausedToPlaying();
+                            OnLevelCleared(vp);
+                            return;
+                        }
+                        break;
+
+                    case PauseMenuScreen.PauseAction.DebugRestartGame:
+                        if (debug)
+                        {
+                            StartNewGame(vp, _preset);
+                            _mode = WorldMode.Playing;
+                            return;
+                        }
+                        break;
                 }
             }
         }
@@ -1354,7 +1457,7 @@ public sealed partial class BreakoutWorld
             }
         }
 
-        _pauseMenu.Update(inputs, vp, dt);
+        _pauseMenu.Update(inputs ?? Array.Empty<DragonBreakInput>(), vp, dt);
 
         switch (_pauseMenu.ConsumeAction())
         {
@@ -1380,6 +1483,22 @@ public sealed partial class BreakoutWorld
             case PauseMenuScreen.PauseAction.MainMenu:
                 _mode = WorldMode.Menu;
                 _menuItem = MenuItem.Start;
+                break;
+
+            case PauseMenuScreen.PauseAction.DebugCompleteLevel:
+                if (debug)
+                {
+                    ExitPausedToPlaying();
+                    OnLevelCleared(vp);
+                }
+                break;
+
+            case PauseMenuScreen.PauseAction.DebugRestartGame:
+                if (debug)
+                {
+                    StartNewGame(vp, _preset);
+                    _mode = WorldMode.Playing;
+                }
                 break;
         }
     }
@@ -2506,6 +2625,7 @@ public sealed partial class BreakoutWorld
             _ballServing.RemoveAt(i);
             if (i < _ballCaught.Count) _ballCaught.RemoveAt(i);
 
+            // Fix up primary-ball indices after removal.
             for (int p = 0; p < _primaryBallIndexByPlayer.Count; p++)
             {
                 if (_primaryBallIndexByPlayer[p] > i)

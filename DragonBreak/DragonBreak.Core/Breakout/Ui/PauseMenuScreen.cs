@@ -15,6 +15,10 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
         RestartLevel,
         HighScores,
         MainMenu,
+
+        // Debug-only
+        DebugCompleteLevel,
+        DebugRestartGame,
     }
 
     private int _selectedIndex;
@@ -22,6 +26,49 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
     private bool _downConsumed;
 
     private PauseAction _pendingAction = PauseAction.None;
+
+    private bool _debugEnabled;
+
+    public void SetDebugEnabled(bool enabled)
+    {
+        _debugEnabled = enabled;
+
+        // Keep selection valid when item count changes.
+        int count = GetItems().Count;
+        if (count <= 0)
+            _selectedIndex = 0;
+        else
+            _selectedIndex = Math.Clamp(_selectedIndex, 0, count - 1);
+    }
+
+    private List<(string Label, PauseAction Action)> GetItems()
+    {
+        var items = new List<(string Label, PauseAction Action)>(8)
+        {
+            ("Resume", PauseAction.Resume),
+            ("Restart Level", PauseAction.RestartLevel),
+            ("High Scores", PauseAction.HighScores),
+            ("Main Menu", PauseAction.MainMenu),
+        };
+
+        if (_debugEnabled)
+        {
+            items.Add(("[Debug] Complete Level", PauseAction.DebugCompleteLevel));
+            items.Add(("[Debug] Restart Game", PauseAction.DebugRestartGame));
+        }
+
+        return items;
+    }
+
+    public int GetItemCount() => GetItems().Count;
+
+    public PauseAction GetActionForItemIndex(int itemIndex)
+    {
+        var items = GetItems();
+        if ((uint)itemIndex >= (uint)items.Count)
+            return PauseAction.None;
+        return items[itemIndex].Action;
+    }
 
     public PauseAction ConsumeAction()
     {
@@ -56,7 +103,9 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
         bool upHeld = upHeldAny || menuY >= deadzone;
         bool downHeld = downHeldAny || menuY <= -deadzone;
 
-        const int itemCount = 4;
+        int itemCount = GetItemCount();
+        if (itemCount <= 0)
+            itemCount = 1;
 
         if (upHeld && !_upConsumed)
         {
@@ -80,14 +129,9 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
 
         if (confirmPressed)
         {
-            _pendingAction = _selectedIndex switch
-            {
-                0 => PauseAction.Resume,
-                1 => PauseAction.RestartLevel,
-                2 => PauseAction.HighScores,
-                3 => PauseAction.MainMenu,
-                _ => PauseAction.Resume,
-            };
+            _pendingAction = GetActionForItemIndex(_selectedIndex);
+            if (_pendingAction == PauseAction.None)
+                _pendingAction = PauseAction.Resume;
         }
     }
 
@@ -98,9 +142,8 @@ internal sealed class PauseMenuScreen : IBreakoutScreen
 
     public IEnumerable<(string Label, bool Selected)> GetLines()
     {
-        yield return ("Resume", _selectedIndex == 0);
-        yield return ("Restart Level", _selectedIndex == 1);
-        yield return ("High Scores", _selectedIndex == 2);
-        yield return ("Main Menu", _selectedIndex == 3);
+        var items = GetItems();
+        for (int i = 0; i < items.Count; i++)
+            yield return (items[i].Label, _selectedIndex == i);
     }
 }

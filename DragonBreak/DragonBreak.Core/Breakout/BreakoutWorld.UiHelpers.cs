@@ -245,6 +245,69 @@ public sealed partial class BreakoutWorld
             sb.DrawString(_hudFont, line, new Vector2(x, y), colColor, 0f, Vector2.Zero, lineScale, SpriteEffects.None, 0f);
         }
 
+        // --- Active power-ups (timers) ---
+        {
+            float powerScale = scale * 0.62f;
+            float barH = Math.Max(6f, 6f * scale);
+            float rowH = Math.Max(barH + 10f, _hudFont.LineSpacing * powerScale);
+
+            float xRight = vp.Width - 16;
+            float yTop = Math.Min(hudH - 8 - rowH * 3, 44 + (_hudFont.LineSpacing * (scale * 0.8f)) * 2);
+            yTop = Math.Clamp(yTop, 44, Math.Max(44, hudH - 8 - rowH));
+
+            var entries = new List<(string Label, float Remaining, float Duration, Color Color)>(3);
+
+            if (_paddleWidthTimeLeft > 0.01f)
+                entries.Add(("PADDLE", _paddleWidthTimeLeft, 12f, new Color(120, 210, 255)));
+
+            if (_ballSpeedTimeLeft > 0.01f)
+            {
+                string label = _ballSpeedMultiplier < 0.99f ? "SLOW" : (_ballSpeedMultiplier > 1.01f ? "FAST" : "SPEED");
+                entries.Add((label, _ballSpeedTimeLeft, 10f, _ballSpeedMultiplier < 0.99f ? new Color(120, 235, 120) : new Color(255, 160, 90)));
+            }
+
+            if (_scoreMultiplierTimeLeft > 0.01f)
+                entries.Add(("SCORE x2", _scoreMultiplierTimeLeft, 12f, new Color(255, 210, 90)));
+
+            if (entries.Count > 0)
+            {
+                // Header
+                string header = "POWER";
+                var headerSize = _hudFont.MeasureString(header) * powerScale;
+                sb.DrawString(_hudFont, header, new Vector2(xRight - headerSize.X, yTop - rowH * 0.65f), new Color(220, 220, 220), 0f, Vector2.Zero, powerScale, SpriteEffects.None, 0f);
+
+                float y = yTop;
+                float barW = Math.Clamp(vp.Width * 0.22f, 140f, 240f);
+
+                for (int i = 0; i < entries.Count; i++)
+                {
+                    var e = entries[i];
+
+                    float pct = e.Duration <= 0.01f ? 0f : MathHelper.Clamp(e.Remaining / e.Duration, 0f, 1f);
+
+                    string text = $"{e.Label} {e.Remaining:0.0}s";
+                    text = SafeText(text);
+                    var size = _hudFont.MeasureString(text) * powerScale;
+
+                    float textX = xRight - size.X;
+                    sb.DrawString(_hudFont, text, new Vector2(textX, y), e.Color, 0f, Vector2.Zero, powerScale, SpriteEffects.None, 0f);
+
+                    // bar under the text
+                    int bx = (int)(xRight - barW);
+                    int by = (int)(y + size.Y + 2);
+                    int bw = (int)(barW);
+                    int bh = (int)(barH);
+
+                    sb.Draw(_pixel, new Rectangle(bx, by, bw, bh), new Color(255, 255, 255, 35));
+                    sb.Draw(_pixel, new Rectangle(bx, by, Math.Max(1, (int)(bw * pct)), bh), new Color((byte)e.Color.R, (byte)e.Color.G, (byte)e.Color.B, (byte)200));
+
+                    y += rowH;
+                    if (y + rowH > hudH - 5)
+                        break;
+                }
+            }
+        }
+
         // --- Pause button (top-center, under level) ---
         var pauseText = "PAUSE";
         var pauseScale = scale * 0.78f;

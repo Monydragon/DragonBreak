@@ -75,10 +75,10 @@ public sealed partial class BreakoutWorld
                 DrawHighScoresMenu(sb, vp, scale);
                 break;
             case WorldMode.NameEntry:
-                _nameEntryScreen?.Draw(sb, vp);
+                DrawNameEntryMenu(sb, vp, scale);
                 break;
             case WorldMode.GameOver:
-                _gameOverScreen?.Draw(sb, vp);
+                DrawGameOverMenu(sb, vp, scale);
                 break;
         }
 
@@ -157,6 +157,10 @@ public sealed partial class BreakoutWorld
 
     private void DrawPausedMenu(SpriteBatch sb, Viewport vp, float scale)
     {
+        // Ensure pause menu line list matches current debug mode.
+        bool debug = (_settings?.Current.Gameplay ?? GameplaySettings.Default).DebugMode;
+        _pauseMenu.SetDebugEnabled(debug);
+
         var lines = new List<(string Text, bool Selected)>();
         lines.Add(("PAUSED", true));
         lines.Add(("", false));
@@ -177,6 +181,30 @@ public sealed partial class BreakoutWorld
 
         // Use the same phone-friendly scale for touch readability.
         DrawMenuLines(sb, vp, lines, GetMenuScale(vp, scale) * 0.95f);
+    }
+
+    private void DrawNameEntryMenu(SpriteBatch sb, Viewport vp, float scale)
+    {
+        if (_nameEntryScreen == null)
+            return;
+
+        var lines = new List<(string Text, bool Selected)>();
+        foreach (var (text, selected) in _nameEntryScreen.GetLines(vp))
+            lines.Add((SafeText(text).ToUpperInvariant(), selected));
+
+        DrawMenuLines(sb, vp, lines, GetMenuScale(vp, scale) * 0.95f);
+    }
+
+    private void DrawGameOverMenu(SpriteBatch sb, Viewport vp, float scale)
+    {
+        if (_gameOverScreen == null)
+            return;
+
+        var lines = new List<(string Text, bool Selected)>();
+        foreach (var (text, selected) in _gameOverScreen.GetLines(vp))
+            lines.Add((SafeText(text).ToUpperInvariant(), selected));
+
+        DrawMenuLines(sb, vp, lines, GetMenuScale(vp, scale) * 0.90f);
     }
 
     // --- Input / menu update (minimal, compiling) ---
@@ -296,7 +324,7 @@ public sealed partial class BreakoutWorld
 
                     // Start settings navigation at the top.
                     _settingsSelectedIndex = 0;
-                    SyncSettingsItemFromSelectedIndex();
+                    SyncSettingsItemFromSelectedIndexUi();
 
                     // Reset left/right repeat state.
                     _settingsAdjustRepeatTime = 0f;
@@ -337,6 +365,34 @@ public sealed partial class BreakoutWorld
             _ => MenuItem.Start,
         };
 
+    // Settings UI: keep navigation/touch aligned with what we actually draw.
+    private static readonly SettingsItem[] SettingsMenuItemsVisibleTopToBottom =
+    [
+        SettingsItem.MasterVolume,
+        SettingsItem.BgmVolume,
+        SettingsItem.SfxVolume,
+        SettingsItem.HudEnabled,
+        SettingsItem.HudScale,
+        SettingsItem.ContinueMode,
+        SettingsItem.AutoContinueSeconds,
+        SettingsItem.LevelSeed,
+        SettingsItem.DebugMode,
+        SettingsItem.Apply,
+        SettingsItem.Cancel,
+    ];
+
+    private void SyncSettingsItemFromSelectedIndexUi()
+    {
+        if (SettingsMenuItemsVisibleTopToBottom.Length == 0)
+        {
+            _settingsSelectedIndex = 0;
+            return;
+        }
+
+        _settingsSelectedIndex = Math.Clamp(_settingsSelectedIndex, 0, SettingsMenuItemsVisibleTopToBottom.Length - 1);
+        _settingsItem = SettingsMenuItemsVisibleTopToBottom[_settingsSelectedIndex];
+    }
+
     private void UpdateSettingsMenu(DragonBreakInput[] inputs, Viewport vp, float dt)
     {
         var input = inputs.Length > 0 ? inputs[0] : default;
@@ -366,15 +422,15 @@ public sealed partial class BreakoutWorld
         {
             _menuUpConsumed = true;
             _settingsSelectedIndex = Math.Max(0, _settingsSelectedIndex - 1);
-            SyncSettingsItemFromSelectedIndex();
+            SyncSettingsItemFromSelectedIndexUi();
         }
         if (!up) _menuUpConsumed = false;
 
         if (down && !_menuDownConsumed)
         {
             _menuDownConsumed = true;
-            _settingsSelectedIndex = Math.Min(SettingsMenuItemsTopToBottom.Length - 1, _settingsSelectedIndex + 1);
-            SyncSettingsItemFromSelectedIndex();
+            _settingsSelectedIndex = Math.Min(SettingsMenuItemsVisibleTopToBottom.Length - 1, _settingsSelectedIndex + 1);
+            SyncSettingsItemFromSelectedIndexUi();
         }
         if (!down) _menuDownConsumed = false;
 
@@ -477,28 +533,19 @@ public sealed partial class BreakoutWorld
         if (!input.Touches.TryGetBegan(out var tap) || !tap.IsTap)
             return false;
 
-        // Pause menu draws: "PAUSED" + blank + 4 items.
         float menuScale = GetMenuScale(vp, uiScale);
         float lineH = (_hudFont?.LineSpacing ?? 18) * menuScale;
 
-        int lineCount = 2 + 4;
+        int itemCount = _pauseMenu.GetItemCount();
+        int lineCount = 2 + itemCount; // "PAUSED" + blank + items
         var panel = GetMenuPanelRect(vp, lineCount, lineH);
 
         int row = HitTestMenuRow(vp, panel, lineH, tap.X01, tap.Y01);
         if (row < 0)
             return false;
 
-        // Rows 0/1 are header + blank.
         int item = row - 2;
-        action = item switch
-        {
-            0 => PauseMenuScreen.PauseAction.Resume,
-            1 => PauseMenuScreen.PauseAction.RestartLevel,
-            2 => PauseMenuScreen.PauseAction.HighScores,
-            3 => PauseMenuScreen.PauseAction.MainMenu,
-            _ => PauseMenuScreen.PauseAction.None,
-        };
-
+        action = _pauseMenu.GetActionForItemIndex(item);
         return action != PauseMenuScreen.PauseAction.None;
     }
 
@@ -536,26 +583,22 @@ public sealed partial class BreakoutWorld
         float menuScale = GetMenuScale(vp, (_settings?.Current.Ui ?? UiSettings.Default).HudScale);
         float lineH = (_hudFont?.LineSpacing ?? 18) * menuScale;
 
-        int count = 11; // matches DrawSettingsMenu() visible entries
+        int count = SettingsMenuItemsVisibleTopToBottom.Length; // matches DrawSettingsMenu() visible entries
         var panel = GetMenuPanelRect(vp, count, lineH);
 
-        // Tap on a row to select it.
         int row = HitTestMenuRow(vp, panel, lineH, tap.X01, tap.Y01);
         if (row < 0)
             return;
 
-        // Update selection based on tap row.
-        _settingsSelectedIndex = Math.Clamp(row, 0, SettingsMenuItemsTopToBottom.Length - 1);
-        SyncSettingsItemFromSelectedIndex();
+        _settingsSelectedIndex = Math.Clamp(row, 0, SettingsMenuItemsVisibleTopToBottom.Length - 1);
+        SyncSettingsItemFromSelectedIndexUi();
 
-        // If it is APPLY/CANCEL row, treat as confirm.
         if (_settingsItem == SettingsItem.Apply || _settingsItem == SettingsItem.Cancel)
         {
             confirm = true;
             return;
         }
 
-        // Otherwise: left quarter = decrement, right quarter = increment.
         float x = tap.X01 * vp.Width;
         if (x < panel.X + panel.Width * 0.25f)
             leftHeld = true;
